@@ -46,6 +46,55 @@ namespace TaskbarQuota.Tests
         }
 
         [Fact]
+        public void GrokBuildSessionUpdates_UseReportedCostAndSupersedeLegacyShellLog()
+        {
+            var directory = CreateTemporaryDirectory();
+            try
+            {
+                var session = Path.Combine(directory, "sessions", "C%3A%5Cwork", "s-1");
+                Directory.CreateDirectory(session);
+                var updates = Path.Combine(session, "updates.jsonl");
+                File.WriteAllLines(updates, new[]
+                {
+                    "{\"timestamp\":1785664800,\"params\":{\"sessionId\":\"s-1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\"}}}",
+                    // Two models in one turn: grok-4.5 reports its own ticks, grok-code shares the rest.
+                    "{\"timestamp\":1785664800,\"params\":{\"sessionId\":\"s-1\",\"update\":{\"sessionUpdate\":\"turn_completed\",\"prompt_id\":\"p-1\","
+                        + "\"usage\":{\"inputTokens\":1500,\"outputTokens\":300,\"cachedReadTokens\":500,\"cacheCreationTokens\":0,\"reasoningTokens\":100,\"costUsdTicks\":30000000000,"
+                        + "\"modelUsage\":{\"grok-4.5\":{\"inputTokens\":1000,\"outputTokens\":200,\"cachedReadTokens\":500,\"reasoningTokens\":100,\"costUsdTicks\":10000000000},"
+                        + "\"grok-code\":{\"inputTokens\":500,\"outputTokens\":100,\"cachedReadTokens\":0}}}},"
+                        + "\"_meta\":{\"agentTimestampMs\":1785664800500}}}",
+                    // The same turn written again is counted once.
+                    "{\"timestamp\":1785664801,\"params\":{\"sessionId\":\"s-1\",\"update\":{\"sessionUpdate\":\"turn_completed\",\"prompt_id\":\"p-1\","
+                        + "\"usage\":{\"inputTokens\":1500,\"outputTokens\":300,\"cachedReadTokens\":500,\"costUsdTicks\":30000000000,"
+                        + "\"modelUsage\":{\"grok-4.5\":{\"inputTokens\":1000,\"outputTokens\":200,\"cachedReadTokens\":500,\"reasoningTokens\":100,\"costUsdTicks\":10000000000},"
+                        + "\"grok-code\":{\"inputTokens\":500,\"outputTokens\":100,\"cachedReadTokens\":0}}}}}}",
+                });
+                // The legacy shell log saw the same session (sid s-1) plus an older one (s-0).
+                var unified = Path.Combine(directory, "unified.jsonl");
+                File.WriteAllLines(unified, new[]
+                {
+                    "{\"ts\":\"2026-08-02T10:00:00Z\",\"pid\":7,\"sid\":\"s-1\",\"msg\":\"shell.turn.inference_done\",\"ctx\":{\"prompt_tokens\":900,\"cached_prompt_tokens\":0,\"completion_tokens\":90}}",
+                    "{\"ts\":\"2026-08-02T09:00:00Z\",\"pid\":6,\"sid\":\"s-0\",\"msg\":\"shell.turn.inference_done\",\"ctx\":{\"prompt_tokens\":40,\"cached_prompt_tokens\":0,\"completion_tokens\":10}}",
+                });
+
+                var now = new DateTimeOffset(2026, 8, 2, 12, 0, 0, TimeSpan.Zero);
+                var history = UsageHistoryService.BuildFromFilesForTesting(ProviderId.Grok, new[] { updates, unified }, now);
+
+                var today = history.Today!;
+                Assert.Equal(1800UL + 50UL, today.Tokens);
+                Assert.Equal(500UL, today.CachedInputTokens);
+                var models = today.ModelBreakdown!.Models;
+                Assert.Equal(1.0, models.Single(item => item.Model == "grok-4.5").CostUsd!.Value, 6);
+                Assert.Equal(2.0, models.Single(item => item.Model == "grok-code").CostUsd!.Value, 6);
+                Assert.Equal(2, today.Sessions);
+            }
+            finally
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+
+        [Fact]
         public void ClaudeUsageEvents_UseReportedCostWhenAvailable()
         {
             var now = new DateTimeOffset(2026, 8, 5, 12, 0, 0, TimeSpan.Zero);
@@ -467,6 +516,85 @@ namespace TaskbarQuota.Tests
                 Assert.Equal(25UL, history.Today.ReasoningTokens);
                 Assert.Equal(expectedModel, history.Today.ModelBreakdown!.Models[0].Model);
                 Assert.Contains("recorded token", history.Today.ModelBreakdown.SourceNote, StringComparison.OrdinalIgnoreCase);
+            }
+            finally
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+
+        [Theory]
+        [InlineData("gemini-3.6-flash-tiered", 1196UL, "gemini-3.6-flash")]
+        [InlineData("Gemini 3.6 Flash (Medium)", 1072UL, "gemini-3.6-flash")]
+        [InlineData("gemini-default", 1187UL, "gemini-3.5-flash")]
+        [InlineData("gemini-3-flash-a", 1020UL, "gemini-3.5-flash")]
+        [InlineData("claude-sonnet-5-5-medium", 1404UL, "claude-sonnet-5-5")]
+        [InlineData("Claude Sonnet 4.6 (Thinking)", 1035UL, "claude-sonnet-4-6")]
+        [InlineData("MODEL_PLACEHOLDER_M196", 1196UL, "gemini-3.6-flash")]
+        // An id missing from the built-in table still resolves through the recorded name.
+        [InlineData("Gemini 3.9 Flash (High)", 1500UL, "gemini-3.9-flash")]
+        [InlineData("claude-4.7-opus-thinking", 1501UL, "claude-opus-4-7")]
+        public void AntigravityDatabase_MapsModelsToPricingKeys(string recordedName, ulong modelId, string expectedModel)
+        {
+            var directory = CreateTemporaryDirectory();
+            try
+            {
+                var path = Path.Combine(directory, "session-map.db");
+                var timestamp = new DateTimeOffset(2026, 8, 5, 10, 0, 0, TimeSpan.Zero);
+                CreateAntigravityDatabase(path, AntigravityGenerationBlob(
+                    recordedName, modelId, timestamp,
+                    AntigravityUsageBlob(100, 20, 0, 0, 0, 20, "response-map")));
+
+                var history = UsageHistoryService.BuildFromFilesForTesting(
+                    ProviderId.Antigravity, new[] { path }, timestamp.AddHours(2));
+
+                Assert.Equal(expectedModel, history.Today!.ModelBreakdown!.Models[0].Model);
+            }
+            finally
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+
+        [Fact]
+        public void AntigravityDatabase_StepsWithOnlyAnIdUseTheNameLearnedFromGenerations()
+        {
+            var directory = CreateTemporaryDirectory();
+            try
+            {
+                var path = Path.Combine(directory, "session-learn.db");
+                var timestamp = new DateTimeOffset(2026, 8, 5, 10, 0, 0, TimeSpan.Zero);
+                CreateAntigravityDatabase(path, AntigravityGenerationBlob(
+                    "Gemini 3.9 Pro (High)", 1600, timestamp,
+                    AntigravityUsageBlob(100, 20, 0, 0, 0, 20, "response-gen")));
+
+                // A step whose usage names only the model id (field 1), as Antigravity writes them.
+                var usage = new List<byte>();
+                ProtoVarintField(usage, 1, 1600);
+                ProtoVarintField(usage, 2, 50);
+                ProtoVarintField(usage, 3, 10);
+                ProtoBytesField(usage, 11, System.Text.Encoding.UTF8.GetBytes("response-step"));
+                var time = new List<byte>();
+                ProtoVarintField(time, 1, (ulong)timestamp.ToUnixTimeSeconds());
+                var step = new List<byte>();
+                ProtoBytesField(step, 1, time.ToArray());
+                ProtoBytesField(step, 9, usage.ToArray());
+                using (var connection = new SqliteConnection($"Data Source={path};Pooling=False"))
+                {
+                    connection.Open();
+                    Execute(connection, "CREATE TABLE steps (idx INTEGER PRIMARY KEY, metadata BLOB);");
+                    using var command = connection.CreateCommand();
+                    command.CommandText = "INSERT INTO steps (idx,metadata) VALUES (0,$data)";
+                    command.Parameters.AddWithValue("$data", step.ToArray());
+                    command.ExecuteNonQuery();
+                }
+
+                var history = UsageHistoryService.BuildFromFilesForTesting(
+                    ProviderId.Antigravity, new[] { path }, timestamp.AddHours(2));
+
+                var model = Assert.Single(history.Today!.ModelBreakdown!.Models);
+                Assert.Equal("gemini-3.9-pro", model.Model);
+                Assert.Equal(180UL, history.Today.Tokens);
             }
             finally
             {
