@@ -45,6 +45,16 @@ namespace TaskbarQuota.Services
         private const string RedirectUri = "https://platform.claude.com/oauth/code/callback";
         private const string TokenUrl = "https://platform.claude.com/v1/oauth/token";
         private const string Scope = "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
+        // The token endpoint rejects a refresh that asks for org:create_api_key with invalid_scope, so a
+        // refresh requests the Claude Code set without it (as openusage and the CLI-credentials path do).
+        internal const string RefreshScope = "user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload";
+        private static readonly TimeSpan RefreshBackoffBase = TimeSpan.FromMinutes(5);
+        private static readonly TimeSpan RefreshBackoffMax = TimeSpan.FromHours(6);
+        private static readonly object RefreshGateLock = new();
+        private static DateTimeOffset _refreshBlockedUntil;
+        private static int _refreshFailures;
+        // Refresh token the endpoint rejected for good (invalid_grant/invalid_scope); a new login replaces it.
+        private static string? _rejectedRefreshToken;
 
         private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(30) };
 
@@ -127,6 +137,7 @@ namespace TaskbarQuota.Services
             if (tokens is null) return null;
             if (!tokens.IsExpired) return tokens;
             if (string.IsNullOrEmpty(tokens.RefreshToken)) return null;
+            if (!CanAttemptRefresh(tokens.RefreshToken!, DateTimeOffset.UtcNow)) return null;
 
             try
             {
@@ -135,16 +146,84 @@ namespace TaskbarQuota.Services
                     ["grant_type"] = "refresh_token",
                     ["client_id"] = ClientId,
                     ["refresh_token"] = tokens.RefreshToken!,
-                    ["scope"] = Scope,
+                    ["scope"] = RefreshScope,
                 };
                 var refreshed = await PostTokenAsync(body, fallbackRefresh: tokens.RefreshToken, ct).ConfigureAwait(false);
                 Save(refreshed);
+                RecordRefreshSuccess();
+                Log.Information("[claude-oauth] login token refreshed.");
                 return refreshed;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
-                Log.Debug($"[claude-oauth] refresh failed: {ex.Message}");
+                RecordRefreshFailure(tokens.RefreshToken!, ex.Message, DateTimeOffset.UtcNow);
                 return null;
+            }
+        }
+
+        /// <summary>
+        /// Refresh failures back off (5 min doubling to 6 h) instead of retrying on every poll, and a
+        /// refresh token the endpoint rejected outright is never retried; logging in again replaces it.
+        /// </summary>
+        internal static bool CanAttemptRefresh(string refreshToken, DateTimeOffset now)
+        {
+            lock (RefreshGateLock)
+            {
+                if (string.Equals(_rejectedRefreshToken, refreshToken, StringComparison.Ordinal))
+                    return false;
+                return now >= _refreshBlockedUntil;
+            }
+        }
+
+        internal static void RecordRefreshFailure(string refreshToken, string message, DateTimeOffset now)
+        {
+            lock (RefreshGateLock)
+            {
+                if (IsTerminalRefreshError(message))
+                {
+                    _rejectedRefreshToken = refreshToken;
+                    Log.Warning($"[claude-oauth] refresh rejected; Login with Claude again to restore it. {message}");
+                    return;
+                }
+
+                _refreshFailures++;
+                _refreshBlockedUntil = now + RefreshBackoff(_refreshFailures);
+                Log.Debug($"[claude-oauth] refresh failed ({_refreshFailures}x), next attempt after {_refreshBlockedUntil.ToLocalTime():HH:mm}: {message}");
+            }
+        }
+
+        private static void RecordRefreshSuccess()
+        {
+            lock (RefreshGateLock)
+            {
+                _refreshFailures = 0;
+                _refreshBlockedUntil = default;
+                _rejectedRefreshToken = null;
+            }
+        }
+
+        internal static bool IsTerminalRefreshError(string message)
+            => message.Contains("invalid_grant", StringComparison.OrdinalIgnoreCase)
+               || message.Contains("invalid_scope", StringComparison.OrdinalIgnoreCase);
+
+        internal static TimeSpan RefreshBackoff(int failures)
+        {
+            var factor = Math.Pow(2, Math.Clamp(failures - 1, 0, 10));
+            var backoff = TimeSpan.FromTicks((long)(RefreshBackoffBase.Ticks * factor));
+            return backoff < RefreshBackoffMax ? backoff : RefreshBackoffMax;
+        }
+
+        internal static void ResetRefreshGateForTesting()
+        {
+            lock (RefreshGateLock)
+            {
+                _refreshFailures = 0;
+                _refreshBlockedUntil = default;
+                _rejectedRefreshToken = null;
             }
         }
 
