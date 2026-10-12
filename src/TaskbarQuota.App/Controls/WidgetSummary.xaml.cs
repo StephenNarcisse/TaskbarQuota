@@ -1357,13 +1357,13 @@ namespace TaskbarQuota.Controls
                     case WidgetDisplayMode.BarsAndPercentages:
                         Panel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(layout.LabelWidth) });
                         Panel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(layout.ResetWidth) });
-                        Panel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(BarColumnWidthBarsAndPercentages) });
+                        Panel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(layout.BarColumnWidth) });
                         Panel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(layout.ValueWidth) });
                         break;
                     default:
                         Panel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(layout.LabelWidth) });
                         Panel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(layout.ResetWidth) });
-                        Panel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(BarColumnWidthBarsOnly) });
+                        Panel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(layout.BarColumnWidth) });
                         break;
                 }
             }
@@ -1406,8 +1406,8 @@ namespace TaskbarQuota.Controls
                 total += mode switch
                 {
                     WidgetDisplayMode.PercentagesOnly => layout.ValueWidth,
-                    WidgetDisplayMode.BarsAndPercentages => BarColumnWidthBarsAndPercentages + layout.ValueWidth,
-                    _ => BarColumnWidthBarsOnly,
+                    WidgetDisplayMode.BarsAndPercentages => layout.BarColumnWidth + layout.ValueWidth,
+                    _ => layout.BarColumnWidth,
                 };
                 columnCount += columnsPerGroup;
             }
@@ -1450,10 +1450,28 @@ namespace TaskbarQuota.Controls
                     widestValue = Math.Max(widestValue, MeasureTextWidth("$1,000.00", labelFont));
             }
 
+            // A group of text-only rows (e.g. Claude's lone "Resets" count beside Session/Weekly) has no
+            // bar to draw, so don't reserve the bar column or the bar-sized value minimum — otherwise the
+            // tile carries a wide empty gap after the value.
+            bool groupHasBar = false;
+            for (int i = 0; i < count; i++)
+                groupHasBar |= rows[start + i].HasBar;
+
+            double valueWidth = groupHasBar || mode == WidgetDisplayMode.PercentagesOnly
+                ? Math.Max(ValueColumnWidth, widestValue + 4)
+                : widestValue + 4;
+            double barWidth = mode switch
+            {
+                WidgetDisplayMode.BarsAndPercentages => groupHasBar ? BarColumnWidthBarsAndPercentages : 0,
+                WidgetDisplayMode.BarsOnly => groupHasBar ? BarColumnWidthBarsOnly : valueWidth,
+                _ => 0,
+            };
+
             return new WidgetLayoutMetrics(
                 Math.Max(MinLabelColumnWidth, widestLabel + 3),
                 widestReset == 0 ? MinResetColumnWidth : widestReset + 2,
-                Math.Max(ValueColumnWidth, widestValue + 4));
+                valueWidth,
+                barWidth);
         }
 
         private void AddRow(
@@ -1919,6 +1937,6 @@ namespace TaskbarQuota.Controls
             TextBlock Value,
             TextBlock? Reset = null);
 
-        private sealed record WidgetLayoutMetrics(double LabelWidth, double ResetWidth, double ValueWidth);
+        private sealed record WidgetLayoutMetrics(double LabelWidth, double ResetWidth, double ValueWidth, double BarColumnWidth);
     }
 }
