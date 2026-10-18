@@ -27,8 +27,13 @@ public sealed record AgentActivityItem(
     string? Model = null,
     string? ThreadId = null,
     string? ParentThreadId = null,
-    string? Host = null)
+    string? Host = null,
+    // Idle with a tool call still in flight: the process is quiet only because the tool is running.
+    bool ActionPending = false)
 {
+    /// <summary>When the item entered its current status; set by <see cref="AgentActivityService"/>.</summary>
+    public DateTimeOffset? StatusSince { get; init; }
+
     public bool IsLive => Status is AgentActivityStatus.Working or AgentActivityStatus.Waiting or AgentActivityStatus.Idle;
     public string StatusText => Status switch
     {
@@ -39,6 +44,21 @@ public sealed record AgentActivityItem(
         AgentActivityStatus.Failed => "Failed",
         _ => "Unknown",
     };
+
+    /// <summary>Time spent in the current status, e.g. "12m" or "1h 5m"; null when unknown.</summary>
+    public string? StatusDurationText(DateTimeOffset now)
+        => StatusSince is { } since ? FormatElapsed(now - since) : null;
+
+    public static string FormatElapsed(TimeSpan elapsed)
+    {
+        if (elapsed < TimeSpan.FromMinutes(1))
+            return "just now";
+        if (elapsed < TimeSpan.FromHours(1))
+            return $"{(int)elapsed.TotalMinutes}m";
+        if (elapsed < TimeSpan.FromDays(1))
+            return elapsed.Minutes == 0 ? $"{(int)elapsed.TotalHours}h" : $"{(int)elapsed.TotalHours}h {elapsed.Minutes}m";
+        return $"{(int)elapsed.TotalDays}d";
+    }
 }
 
 public sealed record AgentActivitySnapshot(IReadOnlyList<AgentActivityItem> Items, IReadOnlyList<AgentActivityItem>? RunItems = null)

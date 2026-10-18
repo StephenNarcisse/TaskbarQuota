@@ -43,6 +43,8 @@ namespace TaskbarQuota
         private bool _applyingBounds;
         private bool _suppressSurfaceControlEvents;
         private DispatcherQueueTimer? _boundsUpdateTimer;
+        private readonly DispatcherQueueTimer _activityElapsedTimer;
+        private readonly List<(TextBlock Text, AgentActivityItem Item)> _activityMetadataBlocks = new();
         private RectInt32? _lastAppliedBounds;
         private double _lastObservedScale = -1;
         private readonly DashboardViewModel _dashboardViewModel;
@@ -68,6 +70,11 @@ namespace TaskbarQuota
             ProviderStrip.Loaded += (_, _) => RebuildProviderStrip();
             WidgetSettingsService.Changed += OnWidgetSettingsChanged;
             AgentActivityService.Instance.Changed += OnActivityChanged;
+            // Status durations ("Idle · 12m") tick on their own; refresh just those labels between scans.
+            _activityElapsedTimer = DispatcherQueue.CreateTimer();
+            _activityElapsedTimer.Interval = TimeSpan.FromSeconds(30);
+            _activityElapsedTimer.Tick += (_, _) => RefreshActivityElapsed();
+            _activityElapsedTimer.Start();
 
             SystemBackdrop = new DesktopAcrylicBackdrop();
             ThemeService.Register(Root);
@@ -422,6 +429,8 @@ namespace TaskbarQuota
         private void RenderActivity(AgentActivitySnapshot snapshot)
         {
             ActivityList.Children.Clear();
+            _activityMetadataBlocks.Clear();
+            var now = DateTimeOffset.Now;
             var items = snapshot.ItemsForDisplay(_selectedActivityId);
             bool monitoringEnabled = WidgetSettingsService.EnableAgentActivityMonitoring;
             ActivityEmptyState.Text = monitoringEnabled ? "No recent agent activity" : "Agent activity monitoring is off";
@@ -442,7 +451,10 @@ namespace TaskbarQuota
                     BorderBrush = (Brush)Application.Current.Resources["CardStrokeColorDefaultBrush"],
                     BorderThickness = new Thickness(1),
                 };
-                var accessibleName = $"{ActivityTitle(item)}, {ActivityProviderLabel(item)}, {item.StatusText}. {item.Step}";
+                var statusDuration = item.StatusDurationText(now);
+                var accessibleName = statusDuration is null
+                    ? $"{ActivityTitle(item)}, {ActivityProviderLabel(item)}, {item.StatusText}. {item.Step}"
+                    : $"{ActivityTitle(item)}, {ActivityProviderLabel(item)}, {item.StatusText}, {statusDuration}. {item.Step}";
                 AutomationProperties.SetName(card, accessibleName);
                 AutomationProperties.SetAutomationId(card, $"AgentActivityCard_{ActivityList.Children.Count}");
                 if (item.Id == _selectedActivityId)
@@ -459,11 +471,10 @@ namespace TaskbarQuota
                 row.Children.Add(CreateActivityProviderVisual(item));
                 var text = new StackPanel { Spacing = 2 };
                 text.Children.Add(new TextBlock { Text = ActivityTitle(item), Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"] });
-                var metadata = string.IsNullOrWhiteSpace(item.Model)
-                    ? $"{ActivityProviderLabel(item)} · {item.StatusText}"
-                    : $"{ActivityProviderLabel(item)} · {item.Model} · {item.StatusText}";
                 var mutedTextBrush = (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"];
-                text.Children.Add(new TextBlock { Text = metadata, Foreground = mutedTextBrush, Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"] });
+                var metadataBlock = new TextBlock { Text = ActivityMetadata(item, now), Foreground = mutedTextBrush, Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"] };
+                _activityMetadataBlocks.Add((metadataBlock, item));
+                text.Children.Add(metadataBlock);
                 text.Children.Add(new TextBlock { Text = item.Step, Foreground = mutedTextBrush, TextTrimming = TextTrimming.CharacterEllipsis, Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"] });
                 if (item.SubagentCount > 0)
                     text.Children.Add(new TextBlock { Text = $"▸ {item.SubagentCount} subagents", Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"] });
@@ -483,6 +494,23 @@ namespace TaskbarQuota
                     ActivityScrollViewer.Focus(FocusState.Programmatic);
                 });
             }
+        }
+
+        private static string ActivityMetadata(AgentActivityItem item, DateTimeOffset now)
+        {
+            var status = item.StatusDurationText(now) is { } duration ? $"{item.StatusText} · {duration}" : item.StatusText;
+            return string.IsNullOrWhiteSpace(item.Model)
+                ? $"{ActivityProviderLabel(item)} · {status}"
+                : $"{ActivityProviderLabel(item)} · {item.Model} · {status}";
+        }
+
+        private void RefreshActivityElapsed()
+        {
+            if (!_shown || !_showingActivity)
+                return;
+            var now = DateTimeOffset.Now;
+            foreach (var (block, item) in _activityMetadataBlocks)
+                block.Text = ActivityMetadata(item, now);
         }
 
         // Working/Waiting sessions would reappear on the next scan, so only settled rows are dismissible.
