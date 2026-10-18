@@ -26,7 +26,11 @@ namespace TaskbarQuota.ActiveApp
         private static readonly Dictionary<int, (int ParentPid, DateTime Started)> StartCache = new();
         private static readonly Dictionary<int, (int ParentPid, string Name, string CommandLine)> CommandLineCache = new();
 
-        public static IReadOnlyList<ProcessEntry> Capture()
+        private const long NameCacheTtlMs = 5000;
+        private static readonly object NameGate = new();
+        private static readonly Dictionary<int, (string? Name, long AtTicks)> NameCache = new();
+
+        public static unsafe IReadOnlyList<ProcessEntry> Capture()
         {
             lock (Gate)
             {
@@ -46,7 +50,7 @@ namespace TaskbarQuota.ActiveApp
                     {
                         do
                         {
-                            list.Add(new ProcessEntry((int)entry.th32ProcessID, (int)entry.th32ParentProcessID, entry.szExeFile));
+                            list.Add(new ProcessEntry((int)entry.th32ProcessID, (int)entry.th32ParentProcessID, new string(entry.szExeFile)));
                         }
                         while (Process32NextW(snapshot, ref entry));
                     }
@@ -141,6 +145,27 @@ namespace TaskbarQuota.ActiveApp
         public static string? TryGetProcessName(int pid)
         {
             if (pid <= 0) return null;
+
+            // The foreground/focus walk asks for the same few pids every tick, and opening a process
+            // handle is the expensive part. A short TTL keeps pid reuse from being misattributed.
+            var now = Environment.TickCount64;
+            lock (NameGate)
+            {
+                if (NameCache.TryGetValue(pid, out var hit) && now - hit.AtTicks < NameCacheTtlMs)
+                    return hit.Name;
+            }
+
+            var resolved = ResolveProcessName(pid);
+            lock (NameGate)
+            {
+                if (NameCache.Count > 512) NameCache.Clear();
+                NameCache[pid] = (resolved, now);
+            }
+            return resolved;
+        }
+
+        private static string? ResolveProcessName(int pid)
+        {
             var handle = OpenProcess(ProcessQueryLimitedInformation, false, (uint)pid);
             if (handle != IntPtr.Zero)
             {
@@ -213,8 +238,10 @@ namespace TaskbarQuota.ActiveApp
         private const uint ProcessQueryLimitedInformation = 0x1000;
         private static readonly IntPtr InvalidHandle = new(-1);
 
+        // Blittable layout (fixed buffer, not ByValTStr) so each Process32Next is a plain call with no
+        // per-entry string marshaling; the exe name is materialised once, only for the list we keep.
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-        private struct ProcessEntry32
+        private unsafe struct ProcessEntry32
         {
             public uint dwSize;
             public uint cntUsage;
@@ -225,8 +252,7 @@ namespace TaskbarQuota.ActiveApp
             public uint th32ParentProcessID;
             public int pcPriClassBase;
             public uint dwFlags;
-            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
-            public string szExeFile;
+            public fixed char szExeFile[260];
         }
 
         [DllImport("kernel32.dll", SetLastError = true)]
@@ -234,11 +260,11 @@ namespace TaskbarQuota.ActiveApp
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool Process32FirstW(IntPtr snapshot, ref ProcessEntry32 entry);
+        private static extern unsafe bool Process32FirstW(IntPtr snapshot, ref ProcessEntry32 entry);
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool Process32NextW(IntPtr snapshot, ref ProcessEntry32 entry);
+        private static extern unsafe bool Process32NextW(IntPtr snapshot, ref ProcessEntry32 entry);
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern IntPtr OpenProcess(uint access, [MarshalAs(UnmanagedType.Bool)] bool inherit, uint pid);
