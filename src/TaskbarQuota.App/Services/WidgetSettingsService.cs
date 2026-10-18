@@ -84,16 +84,16 @@ public static class WidgetSettingsService
     private static readonly string WidgetRowsPath =
         Path.Combine(AppStorage.AppDataDirectory, "widget-rows.json");
 
-    private static readonly string WidgetProvidersPath =
+    private static string WidgetProvidersPath =>
         Path.Combine(AppStorage.AppDataDirectory, "widget-providers.json");
 
-    private static readonly string WidgetPinsPath =
+    private static string WidgetPinsPath =>
         Path.Combine(AppStorage.AppDataDirectory, "widget-pins.json");
 
-    private static readonly string DashboardProvidersPath =
+    private static string DashboardProvidersPath =>
         Path.Combine(AppStorage.AppDataDirectory, "dashboard-providers.json");
 
-    private static readonly string AutoHideUnavailablePath =
+    private static string AutoHideUnavailablePath =>
         Path.Combine(AppStorage.AppDataDirectory, "auto-hide-unavailable.txt");
 
     private static readonly string HideWhenUnfocusedPath =

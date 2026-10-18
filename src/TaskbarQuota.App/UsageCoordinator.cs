@@ -187,10 +187,9 @@ namespace TaskbarQuota
             return result;
         }
 
-        // A provider can back the widget only if it is actually installed or has been configured — so we
-        // never fall back to an enabled-by-default provider the user doesn't even have.
+        // Use the same eligibility as the dashboard; pins and explicit enables survive missed detection.
         private static bool IsProviderAvailable(ProviderId provider) =>
-            ProviderInstallDetector.IsInstalled(provider) || ProviderDiscoveryService.IsConfigured(provider);
+            ProviderDiscoveryService.IsEligible(provider);
         /// <summary>
         /// When the active provider was resolved through the Synara host app, the active thread's
         /// selection (inner provider + model); null otherwise. The taskbar widget reads this to badge the
@@ -996,8 +995,11 @@ namespace TaskbarQuota
         /// not when forced, and not when they are the active provider (issue #83).
         /// </summary>
         internal static bool ShouldFetchForDashboard(ProviderId id, bool force, ProviderId? active)
-            => !ProviderDiscoveryService.IsExplicitlyDisabled(id)
-                && (force || ProviderDiscoveryService.ShouldFetch(id, active));
+        {
+            // Force bypasses UsageService's cache, not the user's provider choices.
+            _ = force;
+            return ProviderDiscoveryService.ShouldFetch(id, active);
+        }
 
         /// <summary>Fetch every registered provider once so the cache is warm and each is verified.</summary>
         public async Task WarmUpAsync()
