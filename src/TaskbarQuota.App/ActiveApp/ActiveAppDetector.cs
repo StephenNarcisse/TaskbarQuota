@@ -812,8 +812,7 @@ namespace TaskbarQuota.ActiveApp
 
         private static string? TryGetProcessNameStatic(int pid)
         {
-            try { return Process.GetProcessById(pid).ProcessName; }
-            catch { return null; }
+            return ProcessSnapshot.TryGetProcessName(pid);
         }
 
         private static string? TryGetProcessNameCached(int pid, Dictionary<int, string?> cache)
@@ -917,8 +916,7 @@ namespace TaskbarQuota.ActiveApp
 
         private static string? TryGetProcessName(int pid)
         {
-            try { return Process.GetProcessById(pid).ProcessName; }
-            catch { return null; }
+            return ProcessSnapshot.TryGetProcessName(pid);
         }
 
         private static ProviderId? DetectCliFromProcesses(
