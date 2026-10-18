@@ -48,6 +48,8 @@ The widget can:
 
 Click the widget for a quick flyout. Open the main window to see every provider and change settings.
 
+In **Settings > Taskbar display order**, drag widget-enabled providers into their preferred left-to-right order, or use **Move up** and **Move down**. The order is saved across restarts and stays fixed when you switch apps. Pinned providers retain priority when space is limited.
+
 ### Automatic tool detection
 
 When an AI desktop app is focused, TaskbarQuota matches its process to a provider. When a terminal is focused, it looks for a running CLI agent such as Codex, Claude Code, OpenCode, Cline, Kimi, Grok, or GitHub Copilot.
