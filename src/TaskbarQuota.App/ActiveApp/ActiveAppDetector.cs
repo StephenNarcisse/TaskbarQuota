@@ -115,7 +115,7 @@ namespace TaskbarQuota.ActiveApp
 
         // Bulk scan covers native CLIs + script hosts + shells/terminals (needed to build the session
         // tree). CommandLine is deliberately excluded here — it is fetched per-PID only when required.
-        private static readonly HashSet<string> BulkProcessNames = new(StringComparer.OrdinalIgnoreCase)
+        internal static readonly HashSet<string> BulkProcessNames = new(StringComparer.OrdinalIgnoreCase)
         {
             "node.exe",
             "antigravity.exe",

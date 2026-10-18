@@ -5,7 +5,7 @@ using System.Runtime.InteropServices;
 
 namespace TaskbarQuota.ActiveApp
 {
-    internal readonly record struct ProcessEntry(int Pid, int ParentPid, string ExeName);
+    internal readonly record struct ProcessEntry(int Pid, int ParentPid, string ExeName, long CreateFileTime = 0);
 
     /// <summary>
     /// Cheap process enumeration shared by the foreground detector and the activity scanner.
@@ -51,6 +51,7 @@ namespace TaskbarQuota.ActiveApp
 
         // SYSTEM_PROCESS_INFORMATION field offsets (identical on x64 and ARM64).
         private const int OffsetNextEntry = 0x00;
+        private const int OffsetCreateTime = 0x20;
         private const int OffsetImageNameLength = 0x38;
         private const int OffsetImageNameBuffer = 0x40;
         private const int OffsetProcessId = 0x50;
@@ -87,7 +88,8 @@ namespace TaskbarQuota.ActiveApp
                         var parent = (int)*(nint*)(current + OffsetParentProcessId);
                         var length = *(ushort*)(current + OffsetImageNameLength);
                         var name = *(char**)(current + OffsetImageNameBuffer);
-                        list.Add(new ProcessEntry(pid, parent, name == null ? "" : new string(name, 0, length / 2)));
+                        var created = *(long*)(current + OffsetCreateTime);
+                        list.Add(new ProcessEntry(pid, parent, name == null ? "" : new string(name, 0, length / 2), created));
 
                         var next = *(uint*)(current + OffsetNextEntry);
                         if (next == 0) break;
@@ -108,10 +110,27 @@ namespace TaskbarQuota.ActiveApp
                 if (StartCache.TryGetValue(pid, out var cached) && cached.ParentPid == parentPid)
                     return cached.Started;
 
-                var started = ReadStartTime(pid);
+                // The process list already carries every process's creation time (no handle needed, so
+                // protected processes that OpenProcess refuses still resolve).
+                DateTime started = DateTime.MinValue;
+                foreach (var entry in _entries)
+                {
+                    if (entry.Pid != pid) continue;
+                    started = FromFileTime(entry.CreateFileTime);
+                    break;
+                }
+                if (started == DateTime.MinValue)
+                    started = ReadStartTime(pid);
+
                 StartCache[pid] = (parentPid, started);
                 return started;
             }
+        }
+
+        private static DateTime FromFileTime(long fileTime)
+        {
+            try { return fileTime > 0 ? DateTime.FromFileTime(fileTime) : DateTime.MinValue; }
+            catch (ArgumentOutOfRangeException) { return DateTime.MinValue; }
         }
 
         /// <summary>

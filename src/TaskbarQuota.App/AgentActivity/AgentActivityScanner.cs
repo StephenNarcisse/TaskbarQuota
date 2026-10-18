@@ -3357,7 +3357,7 @@ internal sealed class AgentActivityScanner
     internal static bool IsRecencyGatedDesktopHostForTesting(string processName)
         => TryGetDesktopProvider(processName, out _, out var recencyGated) && recencyGated;
 
-    private static readonly HashSet<string> TerminalScanProcessNames = new(StringComparer.OrdinalIgnoreCase)
+    internal static readonly HashSet<string> TerminalScanProcessNames = new(StringComparer.OrdinalIgnoreCase)
     {
         "cmd.exe",
         "powershell.exe",
