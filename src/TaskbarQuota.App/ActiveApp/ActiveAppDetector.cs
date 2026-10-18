@@ -115,9 +115,44 @@ namespace TaskbarQuota.ActiveApp
 
         // Bulk scan covers native CLIs + script hosts + shells/terminals (needed to build the session
         // tree). CommandLine is deliberately excluded here — it is fetched per-PID only when required.
-        private const string BulkProcessQuery =
-            "SELECT ProcessId, ParentProcessId, Name, CreationDate FROM Win32_Process WHERE " +
-            "Name = 'node.exe' OR Name = 'antigravity.exe' OR Name = 'agy.exe' OR Name = 'claude.exe' OR Name = 'codex.exe' OR Name = 'cursor.exe' OR Name = 'cursor-agent.exe' OR Name = 'opencode.exe' OR Name = 'copilot.exe' OR Name = 'gh.exe' OR Name = 'grok.exe' OR Name = 'devin.exe' OR Name = 'cline.exe' OR Name = 'kimi.exe' OR Name = 'bun.exe' OR Name = 'deno.exe' OR Name = 'npm.exe' OR Name = 'npx.exe' OR Name = 'pnpm.exe' OR Name = 'yarn.exe' OR Name = 'cmd.exe' OR Name = 'powershell.exe' OR Name = 'pwsh.exe' OR Name = 'windowsterminal.exe' OR Name = 'openconsole.exe' OR Name = 'conhost.exe' OR Name = 'wezterm-gui.exe' OR Name = 'wezterm.exe' OR Name = 'alacritty.exe' OR Name = 'mintty.exe' OR Name = 'tabby.exe' OR Name = 'hyper.exe' OR Name = 'wt.exe' OR Name = 'wsl.exe' OR Name = 'wslhost.exe'";
+        private static readonly HashSet<string> BulkProcessNames = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "node.exe",
+            "antigravity.exe",
+            "agy.exe",
+            "claude.exe",
+            "codex.exe",
+            "cursor.exe",
+            "cursor-agent.exe",
+            "opencode.exe",
+            "copilot.exe",
+            "gh.exe",
+            "grok.exe",
+            "devin.exe",
+            "cline.exe",
+            "kimi.exe",
+            "bun.exe",
+            "deno.exe",
+            "npm.exe",
+            "npx.exe",
+            "pnpm.exe",
+            "yarn.exe",
+            "cmd.exe",
+            "powershell.exe",
+            "pwsh.exe",
+            "windowsterminal.exe",
+            "openconsole.exe",
+            "conhost.exe",
+            "wezterm-gui.exe",
+            "wezterm.exe",
+            "alacritty.exe",
+            "mintty.exe",
+            "tabby.exe",
+            "hyper.exe",
+            "wt.exe",
+            "wsl.exe",
+            "wslhost.exe"
+        };
 
         // Brief cache so tab switches inside one terminal stay responsive without hammering WMI.
         private static readonly TimeSpan CliCacheTtl = TimeSpan.FromMilliseconds(250);
@@ -841,14 +876,11 @@ namespace TaskbarQuota.ActiveApp
         {
             try
             {
-                foreach (var process in Process.GetProcesses())
+                foreach (var entry in ProcessSnapshot.Capture())
                 {
-                    using (process)
-                    {
-                        if (IsKnownGuiProcessName(process.ProcessName)
-                            || SynaraStateReader.IsSynaraProcessName(process.ProcessName))
-                            return true;
-                    }
+                    var name = NormalizeProcessName(entry.ExeName);
+                    if (IsKnownGuiProcessName(name) || SynaraStateReader.IsSynaraProcessName(name))
+                        return true;
                 }
             }
             catch (Exception ex)
@@ -905,16 +937,15 @@ namespace TaskbarQuota.ActiveApp
             var hostPids = new List<int>();
             try
             {
-                using var searcher = new ManagementObjectSearcher(BulkProcessQuery);
-                foreach (ManagementObject mo in searcher.Get())
+                foreach (var entry in ProcessSnapshot.Capture())
                 {
-                    var pid = TryParseInt(mo["ProcessId"]);
-                    if (pid is not int p) continue;
-                    var parentPid = TryParseInt(mo["ParentProcessId"]) ?? 0;
+                    if (!BulkProcessNames.Contains(entry.ExeName)) continue;
+                    var p = entry.Pid;
+                    var parentPid = entry.ParentPid;
                     processParents[p] = parentPid;
-                    var name = NormalizeProcessName(mo["Name"] as string ?? "");
+                    var name = NormalizeProcessName(entry.ExeName);
                     processNames[p] = name;
-                    var started = ParseWmiDate(mo["CreationDate"] as string);
+                    var started = ProcessSnapshot.GetStartTime(p, parentPid);
                     processStarts[p] = started;
 
                     if (NativeCliExes.TryGetValue(name, out var nativeId))
@@ -1115,29 +1146,16 @@ namespace TaskbarQuota.ActiveApp
             var list = new List<int>(new HashSet<int>(pids));
             if (list.Count == 0) return;
 
-            const int chunkSize = 60;
-            for (int i = 0; i < list.Count; i += chunkSize)
+            // Command lines never change for a live process, so ProcessSnapshot reads WMI once per pid.
+            var lookups = list.ConvertAll(p => (p, parents.TryGetValue(p, out var pp) ? pp : 0));
+            foreach (var (pid, info) in ProcessSnapshot.GetCommandLines(lookups))
             {
-                var where = string.Join(" OR ", list.GetRange(i, Math.Min(chunkSize, list.Count - i)).ConvertAll(p => "ProcessId = " + p));
-                try
-                {
-                    using var searcher = new ManagementObjectSearcher(
-                        "SELECT ProcessId, Name, CommandLine FROM Win32_Process WHERE " + where);
-                    foreach (ManagementObject mo in searcher.Get())
-                    {
-                        var pid = TryParseInt(mo["ProcessId"]) ?? 0;
-                        if (TryDetectCliProvider(mo["Name"] as string, mo["CommandLine"] as string) is not { } id)
-                            continue;
-                        var detectedId = ResolveDynamicCliProvider(id);
-                        starts.TryGetValue(pid, out var started);
-                        parents.TryGetValue(pid, out var parentPid);
-                        candidates.Add((detectedId, started, pid, parentPid));
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Diagnostics.Log.Warning(ex, "Failed to read CLI command lines");
-                }
+                if (TryDetectCliProvider(info.Name, info.CommandLine) is not { } id)
+                    continue;
+                var detectedId = ResolveDynamicCliProvider(id);
+                starts.TryGetValue(pid, out var started);
+                parents.TryGetValue(pid, out var parentPid);
+                candidates.Add((detectedId, started, pid, parentPid));
             }
         }
 

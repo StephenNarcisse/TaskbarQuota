@@ -231,6 +231,8 @@ internal sealed class AgentActivityScanner
     {
         lock (_candidateGate)
             _knownCandidates.Clear();
+        lock (_tailParseCache)
+            _tailParseCache.Clear();
         _lastCandidateDiscovery = DateTimeOffset.MinValue;
         _threadNames = new CodexThreadNameResolver();
     }
@@ -1651,6 +1653,12 @@ internal sealed class AgentActivityScanner
     private static string FirstJsonString(string json, params string[] names) => ReadZcodeText(json, names);
     private static string FirstStringDeepFromJson(string json, params string[] names) => string.IsNullOrWhiteSpace(json) ? "" : ReadZcodeText(json, names);
 
+    private const int TailParseCacheLimit = 128;
+    private readonly Dictionary<string, TailParse> _tailParseCache = new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed record TailParse(
+        long Length, DateTimeOffset Modified, TailInfo Info, SessionMetadata Session, ClaudeSessionContext? Claude);
+
     private bool TryRead(ProviderId provider, string path, DateTimeOffset modified,
         bool claimLive, out AgentActivityItem item)
     {
@@ -1661,14 +1669,37 @@ internal sealed class AgentActivityScanner
             if (stream.Length == 0)
                 return false;
 
-            stream.Seek(Math.Max(0, stream.Length - 131_072), SeekOrigin.Begin);
-            using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
-            var text = reader.ReadToEnd();
-            var info = ParseTail(provider, text);
-            var session = provider == ProviderId.Codex ? ReadSessionMetadata(path) : default;
-            ClaudeSessionContext? claude = provider == ProviderId.Claude
-                ? ReadClaudeSessionContext(path, info.ThreadId)
-                : null;
+            // Everything parsed here depends only on the file contents, so an unchanged transcript
+            // (same handle-reported length and last-write time) reuses its parse. Time-relative status
+            // below is still recomputed on every scan.
+            var length = stream.Length;
+            TailParse parse;
+            lock (_tailParseCache)
+            {
+                if (!_tailParseCache.TryGetValue(path, out parse!) || parse.Length != length || parse.Modified != modified)
+                    parse = null!;
+            }
+            if (parse is null)
+            {
+                stream.Seek(Math.Max(0, length - 131_072), SeekOrigin.Begin);
+                using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+                var text = reader.ReadToEnd();
+                var parsedInfo = ParseTail(provider, text);
+                var parsedSession = provider == ProviderId.Codex ? ReadSessionMetadata(path) : default;
+                ClaudeSessionContext? parsedClaude = provider == ProviderId.Claude
+                    ? ReadClaudeSessionContext(path, parsedInfo.ThreadId)
+                    : null;
+                parse = new TailParse(length, modified, parsedInfo, parsedSession, parsedClaude);
+                lock (_tailParseCache)
+                {
+                    if (_tailParseCache.Count >= TailParseCacheLimit)
+                        _tailParseCache.Clear();
+                    _tailParseCache[path] = parse;
+                }
+            }
+            var info = parse.Info;
+            var session = parse.Session;
+            var claude = parse.Claude;
             bool freshAgentEvent = info.LastActivity is { } activity && DateTimeOffset.Now - activity < BusyWindow;
             // One desktop provider process can host several concurrent threads. The process claim marks
             // the session live; transcript timestamps then distinguish working from quiet/idle.
@@ -3267,20 +3298,18 @@ internal sealed class AgentActivityScanner
         var live = new Dictionary<ProviderId, int>();
         var gatedOnly = new HashSet<ProviderId>();
         var ungated = new HashSet<ProviderId>();
-        foreach (var process in Process.GetProcesses())
+        foreach (var entry in ProcessSnapshot.Capture())
         {
-            try
+            var processName = entry.ExeName.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)
+                ? entry.ExeName[..^4]
+                : entry.ExeName;
+            if (TryGetDesktopProvider(processName, out var provider, out var recencyGated))
             {
-                if (TryGetDesktopProvider(process.ProcessName, out var provider, out var recencyGated))
-                {
-                    // Electron-style apps may have many helper processes. They represent one
-                    // desktop agent, not several simultaneous tasks.
-                    live[provider] = 1;
-                    (recencyGated ? gatedOnly : ungated).Add(provider);
-                }
+                // Electron-style apps may have many helper processes. They represent one
+                // desktop agent, not several simultaneous tasks.
+                live[provider] = 1;
+                (recencyGated ? gatedOnly : ungated).Add(provider);
             }
-            catch { }
-            finally { process.Dispose(); }
         }
         gatedOnly.ExceptWith(ungated);
         return (live, gatedOnly);
@@ -3328,6 +3357,33 @@ internal sealed class AgentActivityScanner
     internal static bool IsRecencyGatedDesktopHostForTesting(string processName)
         => TryGetDesktopProvider(processName, out _, out var recencyGated) && recencyGated;
 
+    private static readonly HashSet<string> TerminalScanProcessNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "cmd.exe",
+        "powershell.exe",
+        "pwsh.exe",
+        "node.exe",
+        "bun.exe",
+        "deno.exe",
+        "npm.exe",
+        "npx.exe",
+        "pnpm.exe",
+        "yarn.exe",
+        "wsl.exe",
+        "bash.exe",
+        "codex.exe",
+        "claude.exe",
+        "cursor-agent.exe",
+        "opencode.exe",
+        "cline.exe",
+        "kimi.exe",
+        "agy.exe",
+        "grok.exe",
+        "zcode.exe",
+        "copilot.exe",
+        "github-copilot.exe"
+    };
+
     /// <summary>
     /// Finds agents launched from CMD, PowerShell, Windows Terminal, or a script runtime. This is
     /// intentionally a separate scan from desktop apps and never consults the foreground window.
@@ -3339,39 +3395,23 @@ internal sealed class AgentActivityScanner
         var gatedOnly = new HashSet<ProviderId>();
         var ungated = new HashSet<ProviderId>();
         var matches = new List<(int ProcessId, int ParentProcessId, ProviderId Provider, bool RecencyGated)>();
-        const string query = "SELECT ProcessId, ParentProcessId, Name, CommandLine FROM Win32_Process WHERE " +
-            "Name = 'cmd.exe' OR Name = 'powershell.exe' OR Name = 'pwsh.exe' OR Name = 'node.exe' OR " +
-            "Name = 'bun.exe' OR Name = 'deno.exe' OR Name = 'npm.exe' OR Name = 'npx.exe' OR " +
-            "Name = 'pnpm.exe' OR Name = 'yarn.exe' OR Name = 'wsl.exe' OR Name = 'bash.exe' OR " +
-            "Name = 'codex.exe' OR Name = 'claude.exe' OR Name = 'cursor-agent.exe' OR " +
-            "Name = 'opencode.exe' OR Name = 'cline.exe' OR Name = 'kimi.exe' OR Name = 'agy.exe' OR Name = 'grok.exe' OR Name = 'zcode.exe' OR Name = 'copilot.exe' OR Name = 'github-copilot.exe'";
-
-        try
+        var wanted = new List<ProcessEntry>();
+        foreach (var entry in ProcessSnapshot.Capture())
         {
-            using var searcher = new ManagementObjectSearcher(query);
-            using var processes = searcher.Get();
-            foreach (ManagementObject process in processes)
-            {
-                using (process)
-                {
-                    var name = Path.GetFileNameWithoutExtension(process["Name"]?.ToString() ?? "");
-                    var commandLine = process["CommandLine"]?.ToString() ?? "";
-                    if (TryGetTerminalProvider(name, commandLine, out var provider, out var recencyGated))
-                    {
-                        var processId = Convert.ToInt32(process["ProcessId"] ?? 0);
-                        if (processId <= 0)
-                            continue;
-                        matches.Add((
-                            processId,
-                            Convert.ToInt32(process["ParentProcessId"] ?? 0),
-                            provider,
-                            recencyGated));
-                    }
-                }
-            }
+            if (TerminalScanProcessNames.Contains(entry.ExeName))
+                wanted.Add(entry);
         }
-        catch (ManagementException) { }
-        catch (UnauthorizedAccessException) { }
+
+        // Command lines never change for a live process; WMI is only asked about pids not seen before.
+        var commandLines = ProcessSnapshot.GetCommandLines(wanted.ConvertAll(e => (e.Pid, e.ParentPid)));
+        foreach (var entry in wanted)
+        {
+            if (entry.Pid <= 0 || !commandLines.TryGetValue(entry.Pid, out var info))
+                continue;
+            var name = Path.GetFileNameWithoutExtension(info.Name);
+            if (TryGetTerminalProvider(name, info.CommandLine, out var provider, out var recencyGated))
+                matches.Add((entry.Pid, entry.ParentPid, provider, recencyGated));
+        }
 
         var byId = matches.ToDictionary(match => match.ProcessId);
         foreach (var match in matches)
