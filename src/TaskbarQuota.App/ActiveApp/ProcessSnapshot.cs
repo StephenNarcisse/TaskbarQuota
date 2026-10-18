@@ -9,7 +9,7 @@ namespace TaskbarQuota.ActiveApp
 
     /// <summary>
     /// Cheap process enumeration shared by the foreground detector and the activity scanner.
-    /// A ToolHelp snapshot replaces <c>Process.GetProcesses()</c> (one managed Process object per running
+    /// One NtQuerySystemInformation call replaces <c>Process.GetProcesses()</c> (one managed Process object per running
     /// process) and the unfiltered-by-cost WMI <c>Win32_Process</c> queries. Start times and command
     /// lines of a live process never change, so they are cached per PID and only fetched once.
     /// </summary>
@@ -30,7 +30,7 @@ namespace TaskbarQuota.ActiveApp
         private static readonly object NameGate = new();
         private static readonly Dictionary<int, (string? Name, long AtTicks)> NameCache = new();
 
-        public static unsafe IReadOnlyList<ProcessEntry> Capture()
+        public static IReadOnlyList<ProcessEntry> Capture()
         {
             lock (Gate)
             {
@@ -38,33 +38,70 @@ namespace TaskbarQuota.ActiveApp
                 if (_capturedAtTicks != 0 && now - _capturedAtTicks < SnapshotTtl.TotalMilliseconds)
                     return _entries;
 
-                var list = new List<ProcessEntry>(256);
-                var snapshot = CreateToolhelp32Snapshot(Th32csSnapProcess, 0);
-                if (snapshot == InvalidHandle)
+                var list = new List<ProcessEntry>(512);
+                if (!TryEnumerate(list))
                     return _entries;
-
-                try
-                {
-                    var entry = new ProcessEntry32 { dwSize = (uint)Marshal.SizeOf<ProcessEntry32>() };
-                    if (Process32FirstW(snapshot, ref entry))
-                    {
-                        do
-                        {
-                            list.Add(new ProcessEntry((int)entry.th32ProcessID, (int)entry.th32ParentProcessID, new string(entry.szExeFile)));
-                        }
-                        while (Process32NextW(snapshot, ref entry));
-                    }
-                }
-                finally
-                {
-                    CloseHandle(snapshot);
-                }
 
                 _entries = list;
                 _capturedAtTicks = now;
                 Prune(list);
                 return _entries;
             }
+        }
+
+        // SYSTEM_PROCESS_INFORMATION field offsets (identical on x64 and ARM64).
+        private const int OffsetNextEntry = 0x00;
+        private const int OffsetImageNameLength = 0x38;
+        private const int OffsetImageNameBuffer = 0x40;
+        private const int OffsetProcessId = 0x50;
+        private const int OffsetParentProcessId = 0x58;
+        private const int SystemProcessInformationClass = 5;
+        private const int StatusInfoLengthMismatch = unchecked((int)0xC0000004);
+
+        // One NtQuerySystemInformation call is about half the cost of walking a ToolHelp snapshot,
+        // which makes a separate kernel call per process.
+        private static unsafe bool TryEnumerate(List<ProcessEntry> list)
+        {
+            var size = 1 << 20;
+            for (int attempt = 0; attempt < 4; attempt++)
+            {
+                var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(size);
+                try
+                {
+                    fixed (byte* start = buffer)
+                    {
+                        var status = NtQuerySystemInformation(SystemProcessInformationClass, start, buffer.Length, out var needed);
+                        if (status == StatusInfoLengthMismatch)
+                        {
+                            size = Math.Max(needed + 65536, buffer.Length * 2);
+                            continue;
+                        }
+                        if (status < 0)
+                            return false;
+
+                        var current = start;
+                        while (true)
+                        {
+                            var pid = (int)*(nint*)(current + OffsetProcessId);
+                            var parent = (int)*(nint*)(current + OffsetParentProcessId);
+                            var length = *(ushort*)(current + OffsetImageNameLength);
+                            var name = *(char**)(current + OffsetImageNameBuffer);
+                            list.Add(new ProcessEntry(pid, parent, name == null ? "" : new string(name, 0, length / 2)));
+
+                            var next = *(uint*)(current + OffsetNextEntry);
+                            if (next == 0) break;
+                            current += next;
+                        }
+                        return true;
+                    }
+                }
+                finally
+                {
+                    System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+                }
+            }
+
+            return false;
         }
 
         /// <summary>Process creation time (local), or <see cref="DateTime.MinValue"/> when unreadable.</summary>
@@ -234,37 +271,10 @@ namespace TaskbarQuota.ActiveApp
             }
         }
 
-        private const uint Th32csSnapProcess = 0x00000002;
         private const uint ProcessQueryLimitedInformation = 0x1000;
-        private static readonly IntPtr InvalidHandle = new(-1);
 
-        // Blittable layout (fixed buffer, not ByValTStr) so each Process32Next is a plain call with no
-        // per-entry string marshaling; the exe name is materialised once, only for the list we keep.
-        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-        private unsafe struct ProcessEntry32
-        {
-            public uint dwSize;
-            public uint cntUsage;
-            public uint th32ProcessID;
-            public UIntPtr th32DefaultHeapID;
-            public uint th32ModuleID;
-            public uint cntThreads;
-            public uint th32ParentProcessID;
-            public int pcPriClassBase;
-            public uint dwFlags;
-            public fixed char szExeFile[260];
-        }
-
-        [DllImport("kernel32.dll", SetLastError = true)]
-        private static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint processId);
-
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern unsafe bool Process32FirstW(IntPtr snapshot, ref ProcessEntry32 entry);
-
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern unsafe bool Process32NextW(IntPtr snapshot, ref ProcessEntry32 entry);
+        [DllImport("ntdll.dll")]
+        private static extern unsafe int NtQuerySystemInformation(int informationClass, byte* buffer, int length, out int returnLength);
 
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern IntPtr OpenProcess(uint access, [MarshalAs(UnmanagedType.Bool)] bool inherit, uint pid);
