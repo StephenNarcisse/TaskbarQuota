@@ -21,7 +21,8 @@ namespace TaskbarQuota
 
         private readonly ActiveAppDetector _detector = new();
         // Persist last-good snapshots so the taskbar widget renders real numbers right after a reboot.
-        private readonly UsageService _service = new(UsageSnapshotStore.DefaultDirectory);
+        private readonly UsageService _service = new(
+            UsageSnapshotStore.DefaultDirectory, ProviderDiscoveryService.RecordFetchResult);
         private readonly SemaphoreSlim _gate = new(1, 1);
         // Separate gate for the cheap detection phase so it is never blocked by an in-flight usage fetch.
         private readonly SemaphoreSlim _detectGate = new(1, 1);
