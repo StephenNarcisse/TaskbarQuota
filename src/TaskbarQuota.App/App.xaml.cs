@@ -28,6 +28,7 @@ namespace TaskbarQuota
         private const int TaskbarInitializationRetryDelayMilliseconds = 2500;
 
         private MainWindow? _mainWindow;
+        private MemoryTrimmer? _memoryTrimmer;
         private Timer? _taskbarInitializationTimer;
         private int _taskbarInitializationAttempts;
         private int _taskbarInitializationQueued;
@@ -56,6 +57,7 @@ namespace TaskbarQuota
 
             UsageCoordinator.Instance.Start();
             QuotaAlertService.Instance.Start();
+            _memoryTrimmer = new MemoryTrimmer();
 
             _ = Task.Run(() =>
             {
