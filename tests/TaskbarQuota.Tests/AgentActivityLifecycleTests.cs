@@ -51,6 +51,91 @@ public sealed class AgentActivityLifecycleTests
     }
 
     [Fact]
+    public void DismissedIdleSession_StaysHiddenOnLaterScans()
+    {
+        var service = new AgentActivityService();
+        var idle = Item("idle", AgentActivityStatus.Idle);
+        service.ApplyScan([idle]);
+        service.Dismiss("idle");
+
+        service.ApplyScan([idle]);
+
+        Assert.Empty(service.Snapshot.Items);
+        Assert.Empty(service.Snapshot.TrackedItems);
+        Assert.False(service.Snapshot.HasLiveItems);
+    }
+
+    [Fact]
+    public void DismissedSession_ReappearsWhenUpdatedAtAdvances()
+    {
+        var service = new AgentActivityService();
+        var idle = Item("idle", AgentActivityStatus.Idle);
+        service.ApplyScan([idle]);
+        service.Dismiss("idle");
+
+        service.ApplyScan([idle with { UpdatedAt = idle.UpdatedAt + TimeSpan.FromSeconds(5) }]);
+
+        Assert.Equal("idle", Assert.Single(service.Snapshot.Items).Id);
+    }
+
+    [Theory]
+    [InlineData(AgentActivityStatus.Working)]
+    [InlineData(AgentActivityStatus.Waiting)]
+    public void DismissedSession_ReappearsWhenItBecomesActive(AgentActivityStatus status)
+    {
+        var service = new AgentActivityService();
+        var idle = Item("idle", AgentActivityStatus.Idle);
+        service.ApplyScan([idle]);
+        service.Dismiss("idle");
+
+        service.ApplyScan([idle with { Status = status }]);
+
+        var item = Assert.Single(service.Snapshot.Items);
+        Assert.Equal(status, item.Status);
+        Assert.Contains(service.Snapshot.TrackedItems, tracked => tracked.Id == "idle");
+    }
+
+    [Fact]
+    public void DismissedCompletion_StaysHiddenAndOthersRemain()
+    {
+        var service = new AgentActivityService();
+        var done = Item("done", AgentActivityStatus.Completed);
+        var other = Item("other", AgentActivityStatus.Failed);
+        service.ApplyScan([done, other]);
+        service.Dismiss("done");
+
+        service.ApplyScan([done, other]);
+
+        Assert.Equal("other", Assert.Single(service.Snapshot.Items).Id);
+    }
+
+    [Fact]
+    public void DismissedSession_IsForgottenOnceScannerDropsIt()
+    {
+        var service = new AgentActivityService();
+        var idle = Item("idle", AgentActivityStatus.Idle);
+        service.ApplyScan([idle]);
+        service.Dismiss("idle");
+        service.ApplyScan([]);
+
+        service.ApplyScan([idle]);
+
+        Assert.Equal("idle", Assert.Single(service.Snapshot.Items).Id);
+    }
+
+    [Fact]
+    public void DismissUnknownId_DoesNotRaiseChanged()
+    {
+        var service = new AgentActivityService();
+        var raised = 0;
+        service.Changed += _ => raised++;
+
+        service.Dismiss("missing");
+
+        Assert.Equal(0, raised);
+    }
+
+    [Fact]
     public void ThrowingSubscriber_DoesNotBlockOtherSubscribers()
     {
         var service = new AgentActivityService();
