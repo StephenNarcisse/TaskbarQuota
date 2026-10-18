@@ -60,44 +60,40 @@ namespace TaskbarQuota.ActiveApp
 
         // One NtQuerySystemInformation call is about half the cost of walking a ToolHelp snapshot,
         // which makes a separate kernel call per process.
+        // One buffer reused for every snapshot (callers hold Gate). Renting from ArrayPool instead leaves a
+        // 1 MB large-object-heap array behind per thread that ever captured.
+        private static byte[] _enumerateBuffer = new byte[1 << 20];
+
         private static unsafe bool TryEnumerate(List<ProcessEntry> list)
         {
-            var size = 1 << 20;
             for (int attempt = 0; attempt < 4; attempt++)
             {
-                var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(size);
-                try
+                var buffer = _enumerateBuffer;
+                fixed (byte* start = buffer)
                 {
-                    fixed (byte* start = buffer)
+                    var status = NtQuerySystemInformation(SystemProcessInformationClass, start, buffer.Length, out var needed);
+                    if (status == StatusInfoLengthMismatch)
                     {
-                        var status = NtQuerySystemInformation(SystemProcessInformationClass, start, buffer.Length, out var needed);
-                        if (status == StatusInfoLengthMismatch)
-                        {
-                            size = Math.Max(needed + 65536, buffer.Length * 2);
-                            continue;
-                        }
-                        if (status < 0)
-                            return false;
-
-                        var current = start;
-                        while (true)
-                        {
-                            var pid = (int)*(nint*)(current + OffsetProcessId);
-                            var parent = (int)*(nint*)(current + OffsetParentProcessId);
-                            var length = *(ushort*)(current + OffsetImageNameLength);
-                            var name = *(char**)(current + OffsetImageNameBuffer);
-                            list.Add(new ProcessEntry(pid, parent, name == null ? "" : new string(name, 0, length / 2)));
-
-                            var next = *(uint*)(current + OffsetNextEntry);
-                            if (next == 0) break;
-                            current += next;
-                        }
-                        return true;
+                        _enumerateBuffer = new byte[Math.Max(needed + 65536, buffer.Length * 2)];
+                        continue;
                     }
-                }
-                finally
-                {
-                    System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+                    if (status < 0)
+                        return false;
+
+                    var current = start;
+                    while (true)
+                    {
+                        var pid = (int)*(nint*)(current + OffsetProcessId);
+                        var parent = (int)*(nint*)(current + OffsetParentProcessId);
+                        var length = *(ushort*)(current + OffsetImageNameLength);
+                        var name = *(char**)(current + OffsetImageNameBuffer);
+                        list.Add(new ProcessEntry(pid, parent, name == null ? "" : new string(name, 0, length / 2)));
+
+                        var next = *(uint*)(current + OffsetNextEntry);
+                        if (next == 0) break;
+                        current += next;
+                    }
+                    return true;
                 }
             }
 
