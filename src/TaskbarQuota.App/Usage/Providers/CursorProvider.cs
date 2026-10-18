@@ -264,10 +264,10 @@ namespace TaskbarQuota.Usage.Providers
             var auto = GetNum(plan, "autoPercentUsed");
             var api = GetNum(plan, "apiPercentUsed");
 
-            var usage = new UsageSnapshot(new RateWindow(total, null, billingEnd, resetDescription))
+            var usage = new UsageSnapshot(new RateWindow(total, QuotaWindowLength.Monthly(billingEnd), billingEnd, resetDescription))
             {
-                Secondary = auto is double autoPercent ? new RateWindow(DisplayPercent(autoPercent), null, billingEnd, resetDescription) : null,
-                ModelSpecific = api is double apiPercent ? new RateWindow(apiPercent, null, billingEnd, resetDescription) : null,
+                Secondary = auto is double autoPercent ? new RateWindow(DisplayPercent(autoPercent), QuotaWindowLength.Monthly(billingEnd), billingEnd, resetDescription) : null,
+                ModelSpecific = api is double apiPercent ? new RateWindow(apiPercent, QuotaWindowLength.Monthly(billingEnd), billingEnd, resetDescription) : null,
                 LoginMethod = PlanDisplay(auth.PlanType),
                 Email = auth.Email,
             };
@@ -311,9 +311,9 @@ namespace TaskbarQuota.Usage.Providers
                 percent = limitCents > 0 ? usedCents / limitCents * 100.0 : GetNum(plan, "totalPercentUsed") ?? 0;
 
                 if (GetNum(plan, "autoPercentUsed") is double auto)
-                    secondary = new RateWindow(DisplayPercent(auto), null, billingEnd, resetDescription);
+                    secondary = new RateWindow(DisplayPercent(auto), QuotaWindowLength.Monthly(billingEnd), billingEnd, resetDescription);
                 if (GetNum(plan, "apiPercentUsed") is double api)
-                    model = new RateWindow(api, null, billingEnd, resetDescription);
+                    model = new RateWindow(api, QuotaWindowLength.Monthly(billingEnd), billingEnd, resetDescription);
 
                 cost = OnDemandCost(usageScope, billingEnd)
                     ?? (TryGetObject(summary, "teamUsage", out var teamUsage) ? OnDemandCost(teamUsage, billingEnd) : null);
@@ -325,7 +325,7 @@ namespace TaskbarQuota.Usage.Providers
                 }
             }
 
-            var primary = new RateWindow(percent, null, billingEnd, resetDescription);
+            var primary = new RateWindow(percent, QuotaWindowLength.Monthly(billingEnd), billingEnd, resetDescription);
             var usage = new UsageSnapshot(primary) { Secondary = secondary, ModelSpecific = model, Cost = cost };
 
             var planText = FindString(summary, "membershipType", "planType", "planName", "plan", "subscriptionPlan")
