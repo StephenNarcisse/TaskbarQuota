@@ -484,7 +484,19 @@ namespace TaskbarQuota.ActiveApp
                 : TryGetProcessName(foregroundPid);
 
             var focusHwnd = GetThreadFocusHwnd(hwnd);
-            var windowTitle = TryGetWindowTitle(hwnd);
+            // The title is only consumed by browser and terminal detection, and GetWindowText is a
+            // cross-process message, so read it lazily instead of on every tick.
+            string? windowTitle = null;
+            bool windowTitleRead = false;
+            string? WindowTitle()
+            {
+                if (!windowTitleRead)
+                {
+                    windowTitle = TryGetWindowTitle(hwnd);
+                    windowTitleRead = true;
+                }
+                return windowTitle;
+            }
 
             var sessionRootPid = ResolveTerminalSessionRootPid(hwnd, foregroundPid, procName);
             string? sessionRootName = sessionRootPid == foregroundPid
@@ -541,7 +553,7 @@ namespace TaskbarQuota.ActiveApp
 
             // Normal browser chat surfaces have their own account-level usage semantics and should not be
             // folded into coding-client providers like Codex or Antigravity.
-            if (_browserTabs.Detect(hwnd, procName, windowTitle) is { } browserProvider)
+            if (_browserTabs.Detect(hwnd, procName, BrowserActiveTabDetector.IsBrowserProcessName(procName) ? WindowTitle() : null) is { } browserProvider)
             {
                 _activeSource = browserProvider.Source;
                 return _lastForegroundResult = browserProvider.Provider;
@@ -559,12 +571,12 @@ namespace TaskbarQuota.ActiveApp
 
             if (terminalFocused)
             {
-                Diagnostics.Log.Debug($"[detect] terminal focused: fgPid={foregroundPid} proc={procName} rootPid={sessionRootPid} rootName={sessionRootName} title='{windowTitle}'");
+                Diagnostics.Log.Debug($"[detect] terminal focused: fgPid={foregroundPid} proc={procName} rootPid={sessionRootPid} rootName={sessionRootName} title='{WindowTitle()}'");
                 bool hasPreferred = _terminalWindowCliCache.TryGetValue(hwnd, out var preferredProvider);
                 _cliCache = DetectCliFromProcesses(
                     sessionRootPid,
                     sessionRootName ?? procName,
-                    windowTitle,
+                    WindowTitle(),
                     hasPreferred ? preferredProvider : null);
                 Diagnostics.Log.Debug($"[detect] result={_cliCache?.ToString() ?? "null"}");
                 _cliCachePid = foregroundPid;
