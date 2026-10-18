@@ -133,6 +133,45 @@ namespace TaskbarQuota.ActiveApp
             return result;
         }
 
+        /// <summary>
+        /// Base name (no extension) of a live process, equal to <c>Process.ProcessName</c>. Reads the
+        /// image path through a limited handle (no managed Process object); falls back to the managed
+        /// lookup for processes whose path cannot be queried (protected / access denied).
+        /// </summary>
+        public static string? TryGetProcessName(int pid)
+        {
+            if (pid <= 0) return null;
+            var handle = OpenProcess(ProcessQueryLimitedInformation, false, (uint)pid);
+            if (handle != IntPtr.Zero)
+            {
+                try
+                {
+                    var buffer = new char[1024];
+                    uint size = (uint)buffer.Length;
+                    if (QueryFullProcessImageNameW(handle, 0, buffer, ref size) && size > 0)
+                    {
+                        var path = new string(buffer, 0, (int)size);
+                        var name = System.IO.Path.GetFileNameWithoutExtension(path);
+                        if (!string.IsNullOrEmpty(name)) return name;
+                    }
+                }
+                finally
+                {
+                    CloseHandle(handle);
+                }
+            }
+
+            try
+            {
+                using var process = System.Diagnostics.Process.GetProcessById(pid);
+                return process.ProcessName;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
         private static void Prune(List<ProcessEntry> live)
         {
             if (StartCache.Count == 0 && CommandLineCache.Count == 0) return;
@@ -212,6 +251,10 @@ namespace TaskbarQuota.ActiveApp
             out System.Runtime.InteropServices.ComTypes.FILETIME exit,
             out System.Runtime.InteropServices.ComTypes.FILETIME kernel,
             out System.Runtime.InteropServices.ComTypes.FILETIME user);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool QueryFullProcessImageNameW(IntPtr process, uint flags, [Out] char[] exeName, ref uint size);
 
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
