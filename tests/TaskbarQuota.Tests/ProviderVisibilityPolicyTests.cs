@@ -155,6 +155,36 @@ public sealed class ProviderVisibilityPolicyTests : IDisposable
         Assert.False(ProviderDiscoveryService.ShouldShowInDashboard(ClaudeResult(), ProviderId.Codex));
     }
 
+    [Fact]
+    public void ConfiguredProviderRecoversFromAnEarlierAutomaticHideAtStartup()
+    {
+        // A previous launch missed detection and auto-hid Claude; Claude was later configured while focused.
+        ProviderDiscoveryService.SyncInstalledProviderVisibility();
+        Assert.False(WidgetSettingsService.IsProviderDashboardVisible(ProviderId.Claude));
+        ProviderDiscoveryService.MarkConfiguredForTesting(ProviderId.Claude);
+
+        ProviderDiscoveryService.SyncInstalledProviderVisibility();
+
+        Assert.True(WidgetSettingsService.IsProviderVisible(ProviderId.Claude));
+        Assert.True(WidgetSettingsService.IsProviderDashboardVisible(ProviderId.Claude));
+        Assert.True(ProviderDiscoveryService.ShouldFetch(ProviderId.Claude, ProviderId.Codex));
+        Assert.True(ProviderDiscoveryService.ShouldShowInDashboard(ClaudeResult(), ProviderId.Codex));
+    }
+
+    [Fact]
+    public void ConfiguredProviderStartupRecoveryKeepsExplicitDisable()
+    {
+        ProviderDiscoveryService.MarkConfiguredForTesting(ProviderId.Claude);
+        ProviderDiscoveryService.MarkExplicitlyDisabledForTesting(ProviderId.Claude);
+        WidgetSettingsService.SetProviderVisibleForTesting(ProviderId.Claude, false);
+        WidgetSettingsService.SetProviderDashboardVisibleForTesting(ProviderId.Claude, false);
+
+        ProviderDiscoveryService.SyncInstalledProviderVisibility();
+
+        Assert.False(WidgetSettingsService.IsProviderVisible(ProviderId.Claude));
+        Assert.False(WidgetSettingsService.IsProviderDashboardVisible(ProviderId.Claude));
+    }
+
     [Theory]
     [InlineData("configured")]
     [InlineData("enabled")]

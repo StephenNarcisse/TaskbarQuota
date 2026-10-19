@@ -36,8 +36,8 @@ public static class ProviderDiscoveryService
     static ProviderDiscoveryService() => Load();
 
     /// <summary>
-    /// Scans every provider installation at startup and restores installed providers to the
-    /// dashboard and widget. Explicit disables and widget-level hides remain user choices.
+    /// Scans every provider installation at startup and restores installed or configured providers
+    /// to the dashboard and widget. Explicit disables and widget-level hides remain user choices.
     /// </summary>
     public static void SyncInstalledProviderVisibility()
     {
@@ -52,7 +52,9 @@ public static class ProviderDiscoveryService
                 if (ExplicitlyDisabled.Contains(id))
                     continue;
 
-                if (ProviderInstallDetector.IsInstalled(id))
+                // A configured provider has proven it is set up even when detection misses it, so it
+                // recovers from an earlier automatic hide; otherwise eligibility could never show it.
+                if (ProviderInstallDetector.IsInstalled(id) || Configured.Contains(id))
                 {
                     dashboardChanged |= WidgetSettingsService.SetProviderDashboardVisibleSilent(id, true);
                     if (!ExplicitlyWidgetDisabled.Contains(id))
