@@ -66,6 +66,12 @@ public static class WidgetSettingsService
     private static string FloatingOpacityPath =>
         Path.Combine(AppStorage.AppDataDirectory, "floating-opacity.txt");
 
+    private static string FloatingWindowOpacityPath =>
+        Path.Combine(AppStorage.AppDataDirectory, "floating-window-opacity.txt");
+
+    private static string FloatingClickThroughPath =>
+        Path.Combine(AppStorage.AppDataDirectory, "floating-click-through.txt");
+
     private static string TaskbarPlacementModePath =>
         Path.Combine(AppStorage.AppDataDirectory, "taskbar-placement-mode.txt");
 
@@ -118,12 +124,30 @@ public static class WidgetSettingsService
     /// <summary>Default floating Acrylic strength.</summary>
     public const double FloatingOpacityDefault = 0.90;
 
+    /// <summary>
+    /// Minimum whole-window opacity for the floating HUD (20%). Kept above zero so a translucent,
+    /// click-through HUD can never become invisible and unreachable.
+    /// </summary>
+    public const double FloatingWindowOpacityMin = 0.20;
+    /// <summary>Maximum whole-window opacity; 100% is the regular, non-layered window.</summary>
+    public const double FloatingWindowOpacityMax = 1.0;
+
     public static WidgetDisplayMode Current { get; private set; } = LoadWidgetDisplayMode();
     public static WidgetSurfaceMode CurrentSurface { get; private set; } = LoadWidgetSurfaceMode();
     public static TaskbarPlacementMode CurrentTaskbarPlacement { get; private set; } = LoadTaskbarPlacementMode();
     public static string SelectedTaskbarDisplayKey { get; private set; } = LoadSelectedTaskbarDisplayKey();
     /// <summary>Floating window Acrylic strength in the range [<see cref="FloatingOpacityMin"/>, <see cref="FloatingOpacityMax"/>].</summary>
     public static double FloatingOpacity { get; private set; } = LoadFloatingOpacity();
+    /// <summary>
+    /// Opacity of the whole floating window (text, icons, bars and Acrylic), independent of
+    /// <see cref="FloatingOpacity"/>. 100% (the default) keeps the window non-layered.
+    /// </summary>
+    public static double FloatingWindowOpacity { get; private set; } = LoadFloatingWindowOpacity();
+    /// <summary>
+    /// Opt-in: mouse input passes through the floating window to the app underneath. Holding Ctrl over
+    /// the window temporarily restores interaction so it can still be clicked, dragged or scrolled.
+    /// </summary>
+    public static bool FloatingClickThrough { get; private set; } = LoadFloatingClickThrough();
     public static PercentageDisplayMode CurrentPercentageMode { get; private set; } = LoadPercentageDisplayMode();
     public static bool AutoHideUnavailable { get; private set; } = LoadAutoHideUnavailable();
     /// <summary>
@@ -284,6 +308,8 @@ public static class WidgetSettingsService
     {
         CurrentSurface = LoadWidgetSurfaceMode();
         FloatingOpacity = LoadFloatingOpacity();
+        FloatingWindowOpacity = LoadFloatingWindowOpacity();
+        FloatingClickThrough = LoadFloatingClickThrough();
     }
 
     internal static void ReloadTaskbarPlacementForTesting()
@@ -316,10 +342,15 @@ public static class WidgetSettingsService
     }
 
     internal static void RestoreSurfaceSettingsForTesting(
-        WidgetSurfaceMode surface, double floatingOpacity)
+        WidgetSurfaceMode surface,
+        double floatingOpacity,
+        double floatingWindowOpacity = FloatingWindowOpacityMax,
+        bool floatingClickThrough = false)
     {
         CurrentSurface = surface;
         FloatingOpacity = floatingOpacity;
+        FloatingWindowOpacity = floatingWindowOpacity;
+        FloatingClickThrough = floatingClickThrough;
     }
 
     public static void Apply(WidgetDisplayMode mode)
@@ -424,6 +455,31 @@ public static class WidgetSettingsService
         FloatingOpacity = clamped;
         // Persist as integer percent for stable round-trips.
         Save(FloatingOpacityPath, (int)Math.Round(clamped * 100));
+        Changed?.Invoke(null, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Sets whole-window opacity for the floating HUD. Values outside
+    /// [<see cref="FloatingWindowOpacityMin"/>, <see cref="FloatingWindowOpacityMax"/>] are clamped.
+    /// </summary>
+    public static void ApplyFloatingWindowOpacity(double opacity)
+    {
+        double clamped = Math.Clamp(opacity, FloatingWindowOpacityMin, FloatingWindowOpacityMax);
+        if (Math.Abs(FloatingWindowOpacity - clamped) < 0.005)
+            return;
+
+        FloatingWindowOpacity = clamped;
+        Save(FloatingWindowOpacityPath, (int)Math.Round(clamped * 100));
+        Changed?.Invoke(null, EventArgs.Empty);
+    }
+
+    public static void ApplyFloatingClickThrough(bool enabled)
+    {
+        if (FloatingClickThrough == enabled)
+            return;
+
+        FloatingClickThrough = enabled;
+        Save(FloatingClickThroughPath, enabled ? 1 : 0);
         Changed?.Invoke(null, EventArgs.Empty);
     }
 
@@ -915,6 +971,42 @@ public static class WidgetSettingsService
         catch
         {
             return FloatingOpacityDefault;
+        }
+    }
+
+    private static double LoadFloatingWindowOpacity()
+    {
+        try
+        {
+            if (!File.Exists(FloatingWindowOpacityPath))
+                return FloatingWindowOpacityMax;
+
+            string raw = File.ReadAllText(FloatingWindowOpacityPath).Trim();
+            return int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int percent)
+                && percent is >= 1 and <= 100
+                    ? Math.Clamp(percent / 100d, FloatingWindowOpacityMin, FloatingWindowOpacityMax)
+                    : FloatingWindowOpacityMax;
+        }
+        catch
+        {
+            return FloatingWindowOpacityMax;
+        }
+    }
+
+    // Opt-in, so an absent file means off: existing installs keep a fully interactive HUD.
+    private static bool LoadFloatingClickThrough()
+    {
+        try
+        {
+            if (!File.Exists(FloatingClickThroughPath))
+                return false;
+
+            string raw = File.ReadAllText(FloatingClickThroughPath);
+            return int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) && value != 0;
+        }
+        catch
+        {
+            return false;
         }
     }
 

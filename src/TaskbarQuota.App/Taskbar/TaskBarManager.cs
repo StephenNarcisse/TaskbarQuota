@@ -25,6 +25,7 @@ namespace TaskbarQuota.Taskbar
     internal static class TaskBarManager
     {
         private static TrayIconWithContextMenu? _trayIcon;
+        private static PopupMenuItem? _clickThroughMenuItem;
         private static System.Drawing.Icon? _trayIconSource;
         private static readonly Dictionary<IntPtr, TaskBarWidget> Widgets = new();
         // Reused snapshot of Widgets.Values, so iterating it while a callback may mutate the dictionary
@@ -473,6 +474,14 @@ namespace TaskbarQuota.Taskbar
                 () => ToggleActivityFlyout(anchorHandle: null, selectedActivityId: null)));
             var move = new PopupMenuItem("Move usage widget", (_, _) => _dispatcher?.TryEnqueue(StartMoveActiveSurface));
             var reset = new PopupMenuItem("Reset widget positions", (_, _) => _dispatcher?.TryEnqueue(ResetActiveSurfacePositions));
+            // Always reachable escape hatch: a click-through floating window cannot be right-clicked.
+            _clickThroughMenuItem = new PopupMenuItem(
+                "Floating widget click-through (hold Ctrl to interact)",
+                (_, _) => _dispatcher?.TryEnqueue(
+                    () => WidgetSettingsService.ApplyFloatingClickThrough(!WidgetSettingsService.FloatingClickThrough)))
+            {
+                Checked = WidgetSettingsService.FloatingClickThrough,
+            };
             var quit = new PopupMenuItem("Quit", (_, _) => _dispatcher?.TryEnqueue(App.Quit));
 
             System.Drawing.Icon? icon = null;
@@ -488,7 +497,7 @@ namespace TaskbarQuota.Taskbar
 
             _trayIcon = new TrayIconWithContextMenu
             {
-                ContextMenu = new PopupMenu { Items = { open, activity, new PopupMenuSeparator(), move, reset, new PopupMenuSeparator(), quit } },
+                ContextMenu = new PopupMenu { Items = { open, activity, new PopupMenuSeparator(), move, reset, _clickThroughMenuItem, new PopupMenuSeparator(), quit } },
                 ToolTip = "TaskbarQuota",
             };
             _trayIcon.Create();
@@ -1299,6 +1308,8 @@ namespace TaskbarQuota.Taskbar
         {
             _dispatcher?.TryEnqueue(() =>
             {
+                if (_clickThroughMenuItem is not null)
+                    _clickThroughMenuItem.Checked = WidgetSettingsService.FloatingClickThrough;
                 ConfigureActivityTimer();
                 if (WidgetSettingsService.CurrentSurface != _activeSurface)
                     ApplySurfaceFromSettings();
