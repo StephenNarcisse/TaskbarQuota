@@ -14,8 +14,10 @@ namespace TaskbarQuota;
 /// <list type="bullet">
 ///   <item>Explicitly disabled → never shown or fetched anywhere. Only the Settings
 ///   toggle opts back in.</item>
-///   <item>Not installed → not shown or fetched. Install state comes from
-///   <see cref="ProviderInstallDetector"/> (CLI, credentials, or desktop app).</item>
+///   <item>Explicitly enabled, pinned, configured, or installed → eligible even when inactive.
+///   Surface visibility preferences still decide where a provider appears.</item>
+///   <item>With automatic hiding off, saved visible providers remain eligible. Unknown defaults
+///   alone do not opt every provider into background requests.</item>
 ///   <item>Installed → shown and fetched even while its app is closed.</item>
 /// </list>
 /// </summary>
@@ -37,8 +39,8 @@ public static class ProviderDiscoveryService
     public static event Action<ProviderId>? Changed;
 
     /// <summary>
-    /// Scans every provider installation at startup and restores installed providers to the
-    /// dashboard and widget. Explicit disables and widget-level hides remain user choices.
+    /// Scans every provider installation at startup and restores installed or configured providers
+    /// to the dashboard and widget. Explicit disables and widget-level hides remain user choices.
     /// </summary>
     public static void SyncInstalledProviderVisibility()
     {
@@ -53,7 +55,9 @@ public static class ProviderDiscoveryService
                 if (ExplicitlyDisabled.Contains(id))
                     continue;
 
-                if (ProviderInstallDetector.IsInstalled(id))
+                // A configured provider has proven it is set up even when detection misses it, so it
+                // recovers from an earlier automatic hide; otherwise eligibility could never show it.
+                if (ProviderInstallDetector.IsInstalled(id) || Configured.Contains(id))
                 {
                     dashboardChanged |= WidgetSettingsService.SetProviderDashboardVisibleSilent(id, true);
                     if (!ExplicitlyWidgetDisabled.Contains(id))
@@ -61,7 +65,7 @@ public static class ProviderDiscoveryService
                     continue;
                 }
 
-                if (ExplicitlyEnabled.Contains(id) || WidgetSettingsService.IsProviderPinned(id))
+                if (IsEligible(id))
                     continue;
 
                 widgetChanged |= WidgetSettingsService.SetProviderVisibleSilent(id, false);
@@ -200,6 +204,8 @@ public static class ProviderDiscoveryService
             return false;
         if (id == active)
             return true;
+        if (!WidgetSettingsService.IsProviderDashboardVisible(id) && !WidgetSettingsService.IsProviderVisible(id))
+            return false;
         return IsEligible(id);
     }
 
@@ -209,13 +215,29 @@ public static class ProviderDiscoveryService
             return false;
         if (result.Id == active)
             return true;
+        if (!WidgetSettingsService.IsProviderDashboardVisible(result.Id))
+            return false;
         return IsEligible(result.Id);
     }
 
     /// <summary>
-    /// Every installed provider can be checked while its app is closed.
+    /// Shared by dashboard fetching and widget availability so changing focus cannot discard
+    /// an explicit provider choice merely because installation detection missed it.
     /// </summary>
-    private static bool IsEligible(ProviderId id) => ProviderInstallDetector.IsInstalled(id);
+    internal static bool IsEligible(ProviderId id)
+    {
+        if (IsExplicitlyDisabled(id))
+            return false;
+        if (IsExplicitlyEnabled(id) || WidgetSettingsService.IsProviderPinned(id)
+            || IsConfigured(id) || ProviderInstallDetector.IsInstalled(id))
+            return true;
+
+        // Default visibility is true for every registered provider. Only a saved visible choice
+        // should bypass availability when automatic hiding is off, not those defaults.
+        return !WidgetSettingsService.AutoHideUnavailable
+            && ((WidgetSettingsService.TryGetDashboardProviderVisibilityOverride(id, out bool dashboard) && dashboard)
+                || (WidgetSettingsService.TryGetProviderVisibilityOverride(id, out bool widget) && widget));
+    }
 
     public static bool ShouldShowInAvailable(UsageResult result, ProviderId? active)
     {
