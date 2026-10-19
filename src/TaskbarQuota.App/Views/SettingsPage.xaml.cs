@@ -23,6 +23,7 @@ namespace TaskbarQuota.Views
         private bool _suppressProviderToggleEvents;
         private bool _suppressProviderMuteEvents;
         private bool _suppressTaskbarPlacementEvents;
+        private bool _suppressSurfaceEvents;
         private Slider? _floatingOpacitySlider;
         private Slider? _floatingWindowOpacitySlider;
         // Per-provider controls, so changing one updates only its own row instead of rebuilding the list.
@@ -475,7 +476,7 @@ namespace TaskbarQuota.Views
 
         private void OnWidgetSurfaceChanged(object sender, SelectionChangedEventArgs e)
         {
-            if (_isInitializing)
+            if (_isInitializing || _suppressSurfaceEvents)
                 return;
 
             if (WidgetSurfaceCombo.SelectedItem is ComboBoxItem item && item.Tag is string tag)
@@ -778,7 +779,31 @@ namespace TaskbarQuota.Views
                 // The floating HUD's wheel gestures change these while the page may be open.
                 SyncSlider(_floatingOpacitySlider, FloatingOpacityLabel, WidgetSettingsService.FloatingOpacity);
                 SyncSlider(_floatingWindowOpacitySlider, FloatingWindowOpacityLabel, WidgetSettingsService.FloatingWindowOpacity);
+
+                // Right-clicking the HUD or the flyout's surface button can switch surfaces while open.
+                SyncSurface(WidgetSettingsService.CurrentSurface);
             });
+
+        private void SyncSurface(WidgetSurfaceMode surface)
+        {
+            bool floating = surface == WidgetSurfaceMode.Floating;
+            int index = floating ? 1 : 0;
+            if (WidgetSurfaceCombo.SelectedIndex != index)
+            {
+                _suppressSurfaceEvents = true;
+                try
+                {
+                    WidgetSurfaceCombo.SelectedIndex = index;
+                }
+                finally
+                {
+                    _suppressSurfaceEvents = false;
+                }
+            }
+
+            SetFloatingCardsEnabled(floating);
+            TaskbarPlacementCard.IsEnabled = !floating;
+        }
 
         private static void SyncSlider(Slider? slider, TextBlock label, double value)
         {
