@@ -135,11 +135,11 @@ namespace TaskbarQuota
             WidgetSettingsService.ShowAgentActivityInWidget ? 2 : MaxWidgetTiles;
 
         /// <summary>
-        /// Every provider the taskbar should consider rendering, left to right: visible and available PINNED
-        /// providers first (most recently active first, then enum order), followed by the active provider
+        /// Every provider the taskbar should consider rendering: visible and available PINNED
+        /// providers first in the saved display order, followed by the active provider
         /// when visible and not already present. This is an ordering-only candidate list; each routed display
-        /// applies its own effective tile cap. So with Claude pinned + Z.AI pinned and Codex active you get
-        /// "Claude | Z.AI | Codex"; pins keep their slots even when the active provider changes (issue #88).
+        /// applies its own effective tile cap before arranging the selected tiles in the saved display order.
+        /// Pins keep their slots even when the active provider changes (issue #88).
         /// With no active provider this returns only pinned providers; with neither an active nor pinned
         /// provider it is empty, so the taskbar stays clear until detection selects a provider.
         /// </summary>
@@ -147,13 +147,14 @@ namespace TaskbarQuota
             => ComputeWidgetDisplayProviders(
                 _lastActive,
                 IsActiveToolPresent && IsActiveTileAllowedByFocus,
-                RecentProviders,
-                Enum.GetValues<ProviderId>(),
+                Array.Empty<ProviderId>(),
+                ProviderDisplayOrderService.GetOrder(),
                 WidgetSettingsService.IsProviderPinned,
                 WidgetSettingsService.IsProviderVisible,
                 IsProviderAvailable);
 
-        /// <summary>Pure, testable ordering core of <see cref="WidgetDisplayProviders"/>.</summary>
+        /// <summary>Pure, testable ordering core of <see cref="WidgetDisplayProviders"/>.
+        /// Recent activity is accepted for existing callers but never changes display order.</summary>
         internal static IReadOnlyList<ProviderId> ComputeWidgetDisplayProviders(
             ProviderId? active,
             bool present,
@@ -163,13 +164,8 @@ namespace TaskbarQuota
             Func<ProviderId, bool> isVisible,
             Func<ProviderId, bool> isAvailable)
         {
-            var recentIndex = new Dictionary<ProviderId, int>();
-            for (int i = 0; i < recent.Count; i++)
-                recentIndex.TryAdd(recent[i], i);
-
             var pinned = ordered
                 .Where(p => isPinned(p) && isVisible(p) && isAvailable(p))
-                .OrderBy(p => recentIndex.TryGetValue(p, out int index) ? index : int.MaxValue)
                 .ToList();
 
             var result = new List<ProviderId>(pinned.Count + 1);

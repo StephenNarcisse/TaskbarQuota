@@ -53,6 +53,7 @@ namespace TaskbarQuota.Views
         {
             _isInitializing = true;
             InitializeComponent();
+            InitializeProviderOrder();
             BuildFloatingOpacitySlider();
             ThemeCombo.SelectedIndex = ThemeService.Current switch
             {
@@ -85,6 +86,7 @@ namespace TaskbarQuota.Views
             RebuildProviderSettings();
             RebuildMutedProviderSettings();
             RebuildIconColorSettings();
+            RefreshProviderOrder();
             VersionLabel.Text = $"Version {AppVersion.GetDisplayLabel()}";
             Loaded += async (_, _) =>
             {
@@ -99,6 +101,7 @@ namespace TaskbarQuota.Views
                 RebuildProviderSettings();
                 RebuildMutedProviderSettings();
                 RebuildIconColorSettings();
+                RefreshProviderOrder();
             };
             Unloaded += (_, _) => ProviderDiscoveryService.Changed -= OnProviderDiscoveryChanged;
             _isInitializing = false;
