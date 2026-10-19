@@ -1707,6 +1707,7 @@ internal sealed class AgentActivityScanner
                 Detail: info.Prompt,
                 Model: info.Model,
                 ThreadId: threadId,
+                ActionPending: status == AgentActivityStatus.Idle && info.State == TranscriptState.Action,
                 ParentThreadId: provider == ProviderId.Claude
                     ? claude?.ParentThreadId ?? info.ParentThreadId
                     : session.ParentThreadId ?? info.ParentThreadId,
