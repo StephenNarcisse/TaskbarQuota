@@ -43,6 +43,7 @@ namespace TaskbarQuota.Views
 
         private sealed class ProviderToggleRow
         {
+            public TextBlock? Status;
             public ToggleSwitch? Dashboard;
             public ToggleSwitch? Widget;
             public ComboBox? Pin;
@@ -87,6 +88,8 @@ namespace TaskbarQuota.Views
             VersionLabel.Text = $"Version {AppVersion.GetDisplayLabel()}";
             Loaded += async (_, _) =>
             {
+                ProviderDiscoveryService.Changed -= OnProviderDiscoveryChanged;
+                ProviderDiscoveryService.Changed += OnProviderDiscoveryChanged;
                 await RefreshStartupToggleAsync();
                 Log.Information(
                     $"Settings page loaded (surface={WidgetSettingsService.CurrentSurface}, layout={WidgetSettingsService.Current})");
@@ -97,8 +100,17 @@ namespace TaskbarQuota.Views
                 RebuildMutedProviderSettings();
                 RebuildIconColorSettings();
             };
+            Unloaded += (_, _) => ProviderDiscoveryService.Changed -= OnProviderDiscoveryChanged;
             _isInitializing = false;
         }
+
+        private void OnProviderDiscoveryChanged(ProviderId id)
+            => DispatcherQueue.TryEnqueue(() =>
+            {
+                string status = ViewModel.RefreshProviderStatus(id);
+                if (_providerRows.TryGetValue(id, out var row) && row.Status is { } text)
+                    text.Text = status;
+            });
 
         private void RebuildProviderSettings()
         {
@@ -117,15 +129,16 @@ namespace TaskbarQuota.Views
                     Text = item.DisplayName,
                     Style = (Style)Application.Current.Resources["BodyStrongTextBlockStyle"],
                 });
-                header.Children.Add(new TextBlock
+                var statusText = new TextBlock
                 {
                     Text = item.StatusText,
                     Opacity = 0.65,
                     Style = (Style)Application.Current.Resources["CaptionTextBlockStyle"],
-                });
+                };
+                header.Children.Add(statusText);
                 card.Header = header;
 
-                var toggles = new ProviderToggleRow();
+                var toggles = new ProviderToggleRow { Status = statusText };
                 _providerRows[item.Id] = toggles;
 
                 var content = new StackPanel { Spacing = 8, MinWidth = 180 };

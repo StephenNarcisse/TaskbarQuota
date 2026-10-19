@@ -22,7 +22,7 @@ namespace TaskbarQuota;
 public static class ProviderDiscoveryService
 {
     private static readonly object SyncRoot = new();
-    private static readonly string StatePath =
+    private static string StatePath =>
         Path.Combine(AppStorage.AppDataDirectory, "provider-discovery.json");
 
     private static readonly HashSet<ProviderId> Probed = new();
@@ -30,8 +30,11 @@ public static class ProviderDiscoveryService
     private static readonly HashSet<ProviderId> ExplicitlyEnabled = new();
     private static readonly HashSet<ProviderId> ExplicitlyDisabled = new();
     private static readonly HashSet<ProviderId> ExplicitlyWidgetDisabled = new();
+    private static bool _savePending;
 
     static ProviderDiscoveryService() => Load();
+
+    public static event Action<ProviderId>? Changed;
 
     /// <summary>
     /// Scans every provider installation at startup and restores installed providers to the
@@ -75,12 +78,15 @@ public static class ProviderDiscoveryService
 
     public static void RecordFetchResult(UsageResult result)
     {
+        bool stateChanged;
+        bool widgetChanged = false;
+        bool dashboardChanged = false;
         lock (SyncRoot)
         {
-            Probed.Add(result.Id);
+            stateChanged = Probed.Add(result.Id);
 
             if (result.Ok || result.ErrorKind == ProviderErrorKind.AuthRequired)
-                Configured.Add(result.Id);
+                stateChanged |= Configured.Add(result.Id);
 
             // Fetches update discovery state only. Startup sync restores installed
             // dashboard and widget entries; an explicit widget hide is never overridden.
@@ -88,14 +94,29 @@ public static class ProviderDiscoveryService
             if (result.ErrorKind == ProviderErrorKind.NotInstalled
                 && !ProviderInstallDetector.IsInstalled(result.Id)
                 && WidgetSettingsService.AutoHideUnavailable
-                && !ExplicitlyEnabled.Contains(result.Id))
+                && !ExplicitlyEnabled.Contains(result.Id)
+                && !WidgetSettingsService.IsProviderPinned(result.Id))
             {
-                WidgetSettingsService.SetProviderDashboardVisible(result.Id, false);
-                WidgetSettingsService.SetProviderVisible(result.Id, false);
+                dashboardChanged = WidgetSettingsService.SetProviderDashboardVisibleSilent(result.Id, false);
+                widgetChanged = WidgetSettingsService.SetProviderVisibleSilent(result.Id, false);
             }
 
-            Save();
+            if (stateChanged || _savePending)
+                Save();
+            // Keep writes from concurrent fetch completions serialized with their mutations.
+            if (widgetChanged)
+                WidgetSettingsService.SaveProviderVisibility();
+            if (dashboardChanged)
+                WidgetSettingsService.SaveDashboardProviderVisibility();
         }
+
+        // UI subscribers can read discovery state; never notify them while holding its lock.
+        if (widgetChanged)
+            WidgetSettingsService.NotifyProviderVisibilityChanged();
+        if (dashboardChanged)
+            WidgetSettingsService.NotifyDashboardProviderVisibilityChanged();
+        if (stateChanged)
+            Changed?.Invoke(result.Id);
     }
 
     public static bool IsProbed(ProviderId id)
@@ -214,6 +235,7 @@ public static class ProviderDiscoveryService
             ExplicitlyEnabled.Clear();
             ExplicitlyDisabled.Clear();
             ExplicitlyWidgetDisabled.Clear();
+            _savePending = false;
         }
     }
 
@@ -303,6 +325,7 @@ public static class ProviderDiscoveryService
 
     private static void Save()
     {
+        _savePending = true;
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(StatePath)!);
@@ -315,6 +338,7 @@ public static class ProviderDiscoveryService
                 ExplicitlyWidgetDisabled = ExplicitlyWidgetDisabled.Select(id => id.ToString()).OrderBy(s => s).ToArray(),
             };
             File.WriteAllText(StatePath, JsonSerializer.Serialize(state, new JsonSerializerOptions { WriteIndented = true }));
+            _savePending = false;
         }
         catch
         {

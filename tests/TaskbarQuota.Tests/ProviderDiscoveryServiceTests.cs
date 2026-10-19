@@ -3,6 +3,7 @@ using TaskbarQuota.Usage;
 
 namespace TaskbarQuota.Tests;
 
+[Collection(WidgetRowSettingsCollection.Name)]
 public class ProviderDiscoveryServiceTests
 {
     public ProviderDiscoveryServiceTests()
