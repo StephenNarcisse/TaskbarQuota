@@ -20,6 +20,7 @@ namespace TaskbarQuota.Usage
         private readonly Dictionary<ProviderId, UsageResult> _lastSuccessfulLiveResults = new();
         private readonly object _lock = new();
         private readonly string? _snapshotDirectory;
+        private readonly Action<UsageResult>? _fetchObserver;
         private long _nextObservationSequence;
 
         // How long a persisted snapshot may keep its original timestamp while the usage values are
@@ -34,9 +35,14 @@ namespace TaskbarQuota.Usage
         /// Where the last-good snapshots are persisted so the widget can render real numbers at boot
         /// (issue #21). Null disables persistence — the default, so tests never touch %LOCALAPPDATA%.
         /// </param>
-        public UsageService(string? snapshotDirectory = null)
+        /// <param name="fetchObserver">
+        /// Optional bookkeeping for actual provider attempts, before cache/history fallback. Cache reads,
+        /// restored snapshots and caller cancellation do not notify it; observer failures are isolated.
+        /// </param>
+        public UsageService(string? snapshotDirectory = null, Action<UsageResult>? fetchObserver = null)
         {
             _snapshotDirectory = snapshotDirectory;
+            _fetchObserver = fetchObserver;
             Register(new CodexProvider());
             Register(new CopilotProvider());
             Register(new ClaudeProvider());
@@ -106,7 +112,7 @@ namespace TaskbarQuota.Usage
             var observationSequence = Interlocked.Increment(ref _nextObservationSequence);
             try
             {
-                var fetch = await provider.FetchUsageAsync(ct).ConfigureAwait(false);
+                var fetch = await FetchProviderAsync(provider, ct).ConfigureAwait(false);
                 if (fetch.Usage.UsageHistory is null && UsageHistoryService.TryLoad(id, out var history))
                     fetch.Usage.UsageHistory = history;
                 var observedAt = DateTimeOffset.Now;
@@ -172,6 +178,44 @@ namespace TaskbarQuota.Usage
                 var result = UsageResult.Failure(id, ex.Message, provider);
                 Store(id, result, FetchCachePolicy.TtlForFailure(null));
                 return result;
+            }
+        }
+
+        private async Task<ProviderFetchResult> FetchProviderAsync(IUsageProvider provider, CancellationToken ct)
+        {
+            ProviderFetchResult fetch;
+            try
+            {
+                fetch = await provider.FetchUsageAsync(ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (ProviderException ex)
+            {
+                NotifyFetchObserver(UsageResult.Failure(provider.Id, ex.Message, provider, ex.Kind));
+                throw;
+            }
+            catch (Exception ex)
+            {
+                NotifyFetchObserver(UsageResult.Failure(provider.Id, ex.Message, provider));
+                throw;
+            }
+
+            // Report the provider's actual outcome, before history/cache fallbacks can look successful.
+            // Cache hits and restored snapshots never enter this method.
+            NotifyFetchObserver(UsageResult.Success(provider.Id, provider, fetch));
+            return fetch;
+        }
+
+        private void NotifyFetchObserver(UsageResult result)
+        {
+            try { _fetchObserver?.Invoke(result); }
+            catch (Exception ex)
+            {
+                // Discovery is best effort; an observer must not change the usage result or retry a fetch.
+                Log.Warning(ex, "Provider fetch observer failed");
             }
         }
 

@@ -644,13 +644,17 @@ namespace TaskbarQuota.Controls
         private static WidgetUsageRow WindowRow(string label, RateWindow window, string? glyphData = null)
         {
             bool included = window.IsIncluded;
+            var (pace, paceTip, paceTick) = PaceFor(window);
             return new WidgetUsageRow(
                 CompactLabel(label),
                 included ? WidgetSettingsService.DisplayPercent(window.UsedPercent) : 0,
                 included ? WidgetSettingsService.FormatDisplayPercent(window.UsedPercent) : "Not included",
                 included ? window.ResetDescription : null,
                 HasBar: included,
-                GlyphData: glyphData);
+                GlyphData: glyphData,
+                Pace: pace,
+                PaceTip: paceTip,
+                PaceTickPercent: paceTick);
         }
 
         private static string WindowDisplayValue(RateWindow window)
@@ -736,11 +740,15 @@ namespace TaskbarQuota.Controls
                     string primaryValue = usage.Primary.ShowCostValue && usage.Cost is { } spend
                         ? FormatSpendValue(spend)
                         : WidgetSettingsService.FormatDisplayPercent(usage.Primary.UsedPercent);
+                    var (primaryPace, primaryPaceTip, primaryPaceTick) = PaceFor(usage.Primary);
                     rows.Add(new WidgetUsageRow(
                         CompactLabel(primaryLabel),
                         WidgetSettingsService.DisplayPercent(usage.Primary.UsedPercent),
                         primaryValue,
-                        usage.Primary.ResetDescription));
+                        usage.Primary.ResetDescription,
+                        Pace: primaryPace,
+                        PaceTip: primaryPaceTip,
+                        PaceTickPercent: primaryPaceTick));
                 }
             }
             if (usage.Secondary != null && WidgetSettingsService.IsRowVisible(result.Id, WidgetSettingsService.RowSecondary))
@@ -1031,6 +1039,13 @@ namespace TaskbarQuota.Controls
 
         private void OnWidgetSettingsChanged(object? sender, EventArgs e)
         {
+            // Discovery raises Changed from fetch threads; an exception here would also skip later subscribers.
+            if (!DispatcherQueue.HasThreadAccess)
+            {
+                DispatcherQueue.TryEnqueue(() => OnWidgetSettingsChanged(sender, e));
+                return;
+            }
+
             if (_lastResult is { } result)
                 Apply(result, force: true);
             else
@@ -1531,6 +1546,21 @@ namespace TaskbarQuota.Controls
             };
             barHost.Children.Add(track);
             barHost.Children.Add(bar);
+            if (usageRow.HasBar && usageRow.PaceTickPercent is { } tickPercent)
+            {
+                // Even-pace marker inside the existing bar footprint: no extra width or height.
+                const double tickWidth = 1.5;
+                double tickLeft = Math.Clamp(tickPercent, 0, 100) / 100d * barWidth - tickWidth / 2;
+                barHost.Children.Add(new Border
+                {
+                    Width = tickWidth,
+                    HorizontalAlignment = HorizontalAlignment.Left,
+                    Margin = new Thickness(Math.Clamp(tickLeft, 0, Math.Max(0, barWidth - tickWidth)), 0, 0, 0),
+                    Background = Foreground,
+                    Opacity = 0.9,
+                    IsHitTestVisible = false,
+                });
+            }
 
             switch (mode)
             {
@@ -1679,10 +1709,10 @@ namespace TaskbarQuota.Controls
         private void SetBars()
         {
             foreach (var row in _renderedRows)
-                SetBar(row.Bar, row.Source.Percent, row.BarWidth);
+                SetBar(row.Bar, row.Source.Percent, row.BarWidth, row.Source.Pace);
         }
 
-        private void SetBar(FrameworkElement bar, double percent, double maxWidth)
+        private void SetBar(FrameworkElement bar, double percent, double maxWidth, PaceSeverity? pace = null)
         {
             bar.Width = Math.Clamp(percent, 0, 100) * (maxWidth / 100d);
             if (bar is not Border border)
@@ -1691,15 +1721,26 @@ namespace TaskbarQuota.Controls
             bool emphasized = WidgetSettingsService.CurrentPercentageMode == PercentageDisplayMode.Remaining
                 ? percent <= 25
                 : percent >= 75;
-            border.Background = UsageBarBrush(percent);
-            border.Opacity = emphasized ? 0.95 : 0.78;
+            border.Background = UsageBarBrush(percent, pace);
+            border.Opacity = emphasized || pace is PaceSeverity.RunningOut or PaceSeverity.Spent ? 0.95 : 0.78;
         }
 
-        private Brush UsageBarBrush(double displayPercent)
+        private Brush UsageBarBrush(double displayPercent, PaceSeverity? pace = null)
         {
             bool light = UseApplicationChromeColors
                 ? ThemeService.IsLightChrome(this)
                 : Interop.SystemInfos.IsSystemLightThemeUsed() == true;
+            // Pace verdict wins over the raw level: blue on course, amber near the limit, red when it
+            // will run out before reset. Windows that cannot be forecast fall through to level colors.
+            if (pace is { } verdict)
+            {
+                return verdict switch
+                {
+                    PaceSeverity.Close => new SolidColorBrush(light ? Color.FromArgb(255, 157, 93, 0) : Color.FromArgb(255, 255, 185, 0)),
+                    PaceSeverity.RunningOut or PaceSeverity.Spent => new SolidColorBrush(light ? Color.FromArgb(255, 196, 43, 28) : Color.FromArgb(255, 255, 99, 71)),
+                    _ => new SolidColorBrush(light ? Color.FromArgb(255, 0, 103, 192) : Color.FromArgb(255, 96, 205, 255)),
+                };
+            }
             // Thresholds match WidgetSettingsService usage colors (critical / caution / normal).
             displayPercent = Math.Clamp(displayPercent, 0, 100);
             bool remaining = WidgetSettingsService.CurrentPercentageMode == PercentageDisplayMode.Remaining;
@@ -1790,6 +1831,11 @@ namespace TaskbarQuota.Controls
             => PlanDisplayNames.ForTitle(id, displayName, loginMethod);
 
         private static string FormatTooltipLine(WidgetUsageRow row)
+            => row.PaceTip is { Length: > 0 } pace
+                ? $"{FormatTooltipBase(row)}\n   {pace}"
+                : FormatTooltipBase(row);
+
+        private static string FormatTooltipBase(WidgetUsageRow row)
         {
             if (string.IsNullOrWhiteSpace(row.ResetDescription))
                 return $"{row.Label}: {row.Value}";
@@ -1926,7 +1972,27 @@ namespace TaskbarQuota.Controls
             string? ResetDescription = null,
             bool HasBar = true,
             string? GlyphData = null,
-            Brush? ForegroundBrush = null);
+            Brush? ForegroundBrush = null,
+            PaceSeverity? Pace = null,
+            string? PaceTip = null,
+            double? PaceTickPercent = null);
+
+        /// <summary>Pace verdict for a window, or nulls when it cannot be forecast. Colors the widget bar and, once
+        /// the pace is no longer comfortable, marks even pace on the track; the detail text lives in the tooltip so
+        /// the tile never grows.</summary>
+        private static (PaceSeverity? Severity, string? Tip, double? Tick) PaceFor(RateWindow window)
+        {
+            if (!window.IsIncluded)
+                return (null, null, null);
+            var now = DateTimeOffset.UtcNow;
+            var pace = QuotaPacing.Evaluate(window, now, isSessionWindow: window.WindowMinutes is <= 360);
+            if (pace.Severity == PaceSeverity.Untracked)
+                return (null, null, null);
+            double? tick = pace.Severity is PaceSeverity.Close or PaceSeverity.RunningOut && pace.IdealPacePercent is { } ideal
+                ? WidgetSettingsService.DisplayPercent(ideal)
+                : null;
+            return (pace.Severity, QuotaPacing.Tooltip(pace, now), tick);
+        }
 
         private sealed record RenderedRow(
             WidgetUsageRow Source,

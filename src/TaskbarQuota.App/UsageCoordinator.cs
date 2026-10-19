@@ -21,7 +21,8 @@ namespace TaskbarQuota
 
         private readonly ActiveAppDetector _detector = new();
         // Persist last-good snapshots so the taskbar widget renders real numbers right after a reboot.
-        private readonly UsageService _service = new(UsageSnapshotStore.DefaultDirectory);
+        private readonly UsageService _service = new(
+            UsageSnapshotStore.DefaultDirectory, ProviderDiscoveryService.RecordFetchResult);
         private readonly SemaphoreSlim _gate = new(1, 1);
         // Separate gate for the cheap detection phase so it is never blocked by an in-flight usage fetch.
         private readonly SemaphoreSlim _detectGate = new(1, 1);
@@ -134,11 +135,11 @@ namespace TaskbarQuota
             WidgetSettingsService.ShowAgentActivityInWidget ? 2 : MaxWidgetTiles;
 
         /// <summary>
-        /// Every provider the taskbar should consider rendering, left to right: visible and available PINNED
-        /// providers first (most recently active first, then enum order), followed by the active provider
+        /// Every provider the taskbar should consider rendering: visible and available PINNED
+        /// providers first in the saved display order, followed by the active provider
         /// when visible and not already present. This is an ordering-only candidate list; each routed display
-        /// applies its own effective tile cap. So with Claude pinned + Z.AI pinned and Codex active you get
-        /// "Claude | Z.AI | Codex"; pins keep their slots even when the active provider changes (issue #88).
+        /// applies its own effective tile cap before arranging the selected tiles in the saved display order.
+        /// Pins keep their slots even when the active provider changes (issue #88).
         /// With no active provider this returns only pinned providers; with neither an active nor pinned
         /// provider it is empty, so the taskbar stays clear until detection selects a provider.
         /// </summary>
@@ -146,13 +147,14 @@ namespace TaskbarQuota
             => ComputeWidgetDisplayProviders(
                 _lastActive,
                 IsActiveToolPresent && IsActiveTileAllowedByFocus,
-                RecentProviders,
-                Enum.GetValues<ProviderId>(),
+                Array.Empty<ProviderId>(),
+                ProviderDisplayOrderService.GetOrder(),
                 WidgetSettingsService.IsProviderPinned,
                 WidgetSettingsService.IsProviderVisible,
                 IsProviderAvailable);
 
-        /// <summary>Pure, testable ordering core of <see cref="WidgetDisplayProviders"/>.</summary>
+        /// <summary>Pure, testable ordering core of <see cref="WidgetDisplayProviders"/>.
+        /// Recent activity is accepted for existing callers but never changes display order.</summary>
         internal static IReadOnlyList<ProviderId> ComputeWidgetDisplayProviders(
             ProviderId? active,
             bool present,
@@ -162,13 +164,8 @@ namespace TaskbarQuota
             Func<ProviderId, bool> isVisible,
             Func<ProviderId, bool> isAvailable)
         {
-            var recentIndex = new Dictionary<ProviderId, int>();
-            for (int i = 0; i < recent.Count; i++)
-                recentIndex.TryAdd(recent[i], i);
-
             var pinned = ordered
                 .Where(p => isPinned(p) && isVisible(p) && isAvailable(p))
-                .OrderBy(p => recentIndex.TryGetValue(p, out int index) ? index : int.MaxValue)
                 .ToList();
 
             var result = new List<ProviderId>(pinned.Count + 1);
@@ -187,10 +184,9 @@ namespace TaskbarQuota
             return result;
         }
 
-        // A provider can back the widget only if it is actually installed or has been configured — so we
-        // never fall back to an enabled-by-default provider the user doesn't even have.
+        // Use the same eligibility as the dashboard; pins and explicit enables survive missed detection.
         private static bool IsProviderAvailable(ProviderId provider) =>
-            ProviderInstallDetector.IsInstalled(provider) || ProviderDiscoveryService.IsConfigured(provider);
+            ProviderDiscoveryService.IsEligible(provider);
         /// <summary>
         /// When the active provider was resolved through the Synara host app, the active thread's
         /// selection (inner provider + model); null otherwise. The taskbar widget reads this to badge the
@@ -996,8 +992,11 @@ namespace TaskbarQuota
         /// not when forced, and not when they are the active provider (issue #83).
         /// </summary>
         internal static bool ShouldFetchForDashboard(ProviderId id, bool force, ProviderId? active)
-            => !ProviderDiscoveryService.IsExplicitlyDisabled(id)
-                && (force || ProviderDiscoveryService.ShouldFetch(id, active));
+        {
+            // Force bypasses UsageService's cache, not the user's provider choices.
+            _ = force;
+            return ProviderDiscoveryService.ShouldFetch(id, active);
+        }
 
         /// <summary>Fetch every registered provider once so the cache is warm and each is verified.</summary>
         public async Task WarmUpAsync()

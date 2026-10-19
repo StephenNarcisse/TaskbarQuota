@@ -6,7 +6,7 @@ namespace TaskbarQuota.Tests;
 
 /// <summary>
 /// Ordering rules for the taskbar's multi-provider candidate list (issue #88): visible, available pins lead
-/// most-recently-active first, followed by the active provider when visible and not already present. The
+/// in saved order, followed by the active provider when visible and not already present. The
 /// per-display cap is applied after routing.
 /// </summary>
 public class WidgetDisplayProvidersTests
@@ -14,6 +14,7 @@ public class WidgetDisplayProvidersTests
     private static IReadOnlyList<ProviderId> Compute(
         ProviderId? active,
         IReadOnlyList<ProviderId> pinned,
+        IReadOnlyList<ProviderId>? order = null,
         IReadOnlyList<ProviderId>? recent = null,
         bool present = true,
         Func<ProviderId, bool>? isVisible = null,
@@ -22,21 +23,20 @@ public class WidgetDisplayProvidersTests
             active,
             present,
             recent ?? Array.Empty<ProviderId>(),
-            Enum.GetValues<ProviderId>(),
+            order ?? Enum.GetValues<ProviderId>(),
             p => pinned.Contains(p),
             isVisible ?? (_ => true),
             isAvailable ?? (_ => true));
 
     [Fact]
-    public void PinnedProvidersLeadActiveInRecencyOrder()
+    public void PinnedProvidersLeadActiveInSavedOrder()
     {
-        // The scenario from the issue thread: Claude used just before Codex, Z.AI never focused.
         var result = Compute(
             active: ProviderId.Codex,
             pinned: new[] { ProviderId.Claude, ProviderId.Zai },
-            recent: new[] { ProviderId.Codex, ProviderId.Claude });
+            order: new[] { ProviderId.Codex, ProviderId.Zai, ProviderId.Claude });
 
-        Assert.Equal(new[] { ProviderId.Claude, ProviderId.Zai, ProviderId.Codex }, result);
+        Assert.Equal(new[] { ProviderId.Zai, ProviderId.Claude, ProviderId.Codex }, result);
     }
 
     [Fact]
@@ -45,9 +45,26 @@ public class WidgetDisplayProvidersTests
         var result = Compute(
             active: ProviderId.Zai,
             pinned: new[] { ProviderId.Claude, ProviderId.Zai },
-            recent: new[] { ProviderId.Zai, ProviderId.Claude });
+            order: new[] { ProviderId.Zai, ProviderId.Claude });
 
         Assert.Equal(new[] { ProviderId.Zai, ProviderId.Claude }, result);
+    }
+
+    [Theory]
+    [InlineData(ProviderId.Claude)]
+    [InlineData(ProviderId.Codex)]
+    [InlineData(null)]
+    public void SwitchingFocusDoesNotReorderPinnedProviders(ProviderId? active)
+    {
+        var result = Compute(
+            active,
+            pinned: new[] { ProviderId.Claude, ProviderId.Codex },
+            order: new[] { ProviderId.Codex, ProviderId.Claude },
+            recent: active == ProviderId.Claude
+                ? new[] { ProviderId.Claude, ProviderId.Codex }
+                : new[] { ProviderId.Codex, ProviderId.Claude });
+
+        Assert.Equal(new[] { ProviderId.Codex, ProviderId.Claude }, result);
     }
 
     [Fact]

@@ -64,7 +64,7 @@ namespace TaskbarQuota.Usage.Providers
                 if (reset is DateTimeOffset resetAt)
                     credits = credits.WithResetsAt(resetAt);
 
-                var usage = new UsageSnapshot(new RateWindow(usedPercent, null, reset, resetDescription))
+                var usage = new UsageSnapshot(new RateWindow(usedPercent, QuotaWindowLength.Monthly(reset), reset, resetDescription))
                 {
                     Cost = credits,
                     AdditionalUsage = TryParseAdditionalUsage(root),
@@ -241,7 +241,7 @@ namespace TaskbarQuota.Usage.Providers
             if (snapshot.TryGetProperty("quota_reset_at", out var resetEl) && resetEl.TryGetInt64(out long ts) && ts > 0)
                 resetAt = DateTimeOffset.FromUnixTimeSeconds(ts);
 
-            return new RateWindow(used, null, resetAt, CodexProvider.FormatResetCountdown(resetAt));
+            return new RateWindow(used, QuotaWindowLength.Monthly(resetAt), resetAt, CodexProvider.FormatResetCountdown(resetAt));
         }
 
         private static DateTimeOffset? ParseReset(JsonElement root)

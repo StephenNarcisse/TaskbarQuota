@@ -169,6 +169,47 @@
                               Toggled="OnFloatingClickThroughToggled"/>
             </tk:SettingsCard>
 
+            <TextBlock Text="Taskbar display order" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,16,0,2"/>
+            <TextBlock Text="Drag providers to set their left-to-right order. Only providers enabled for the widget appear here. Changes apply immediately and stay in place when you switch apps."
+                       Style="{StaticResource CaptionTextBlockStyle}"
+                       Opacity="0.7" TextWrapping="Wrap" Margin="0,0,0,4"/>
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1" CornerRadius="8" Padding="8">
+                <StackPanel Spacing="8">
+                    <ListView x:Name="ProviderOrderList"
+                              CanDragItems="True" CanReorderItems="True" AllowDrop="True"
+                              SelectionMode="Single" MaxHeight="360"
+                              HorizontalContentAlignment="Stretch"
+                              AutomationProperties.Name="Taskbar provider display order"
+                              AutomationProperties.AutomationId="ProviderOrderList"
+                              DragItemsStarting="OnProviderOrderDragStarting"
+                              DragItemsCompleted="OnProviderOrderDragCompleted"
+                              SelectionChanged="OnProviderOrderSelectionChanged">
+                        <ListView.ItemTemplate>
+                            <DataTemplate x:DataType="vm:ProviderSettingItemViewModel">
+                                <StackPanel Orientation="Horizontal" Spacing="12" Padding="8">
+                                    <FontIcon Glyph="&#xE700;" FontSize="14" Opacity="0.6"
+                                              IsHitTestVisible="False"/>
+                                    <TextBlock Text="{x:Bind DisplayName}" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ListView.ItemTemplate>
+                    </ListView>
+                    <TextBlock x:Name="ProviderOrderEmptyText"
+                               Text="Enable a provider's Widget toggle below to add it here."
+                               TextWrapping="Wrap" Margin="8"/>
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="ProviderOrderUpButton" Content="Move up"
+                                AutomationProperties.Name="Move selected provider earlier"
+                                Click="OnProviderOrderMoveUp" IsEnabled="False"/>
+                        <Button x:Name="ProviderOrderDownButton" Content="Move down"
+                                AutomationProperties.Name="Move selected provider later"
+                                Click="OnProviderOrderMoveDown" IsEnabled="False"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
             <TextBlock Text="Providers" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,16,0,2"/>
             <tk:SettingsCard Header="Hide unavailable providers"
                              Description="Automatically hide providers that are not installed or signed in. You can still add them from the dashboard or below.">

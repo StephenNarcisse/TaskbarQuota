@@ -14,15 +14,17 @@ namespace TaskbarQuota;
 /// <list type="bullet">
 ///   <item>Explicitly disabled → never shown or fetched anywhere. Only the Settings
 ///   toggle opts back in.</item>
-///   <item>Not installed → not shown or fetched. Install state comes from
-///   <see cref="ProviderInstallDetector"/> (CLI, credentials, or desktop app).</item>
+///   <item>Explicitly enabled, pinned, configured, or installed → eligible even when inactive.
+///   Surface visibility preferences still decide where a provider appears.</item>
+///   <item>With automatic hiding off, saved visible providers remain eligible. Unknown defaults
+///   alone do not opt every provider into background requests.</item>
 ///   <item>Installed → shown and fetched even while its app is closed.</item>
 /// </list>
 /// </summary>
 public static class ProviderDiscoveryService
 {
     private static readonly object SyncRoot = new();
-    private static readonly string StatePath =
+    private static string StatePath =>
         Path.Combine(AppStorage.AppDataDirectory, "provider-discovery.json");
 
     private static readonly HashSet<ProviderId> Probed = new();
@@ -30,12 +32,15 @@ public static class ProviderDiscoveryService
     private static readonly HashSet<ProviderId> ExplicitlyEnabled = new();
     private static readonly HashSet<ProviderId> ExplicitlyDisabled = new();
     private static readonly HashSet<ProviderId> ExplicitlyWidgetDisabled = new();
+    private static bool _savePending;
 
     static ProviderDiscoveryService() => Load();
 
+    public static event Action<ProviderId>? Changed;
+
     /// <summary>
-    /// Scans every provider installation at startup and restores installed providers to the
-    /// dashboard and widget. Explicit disables and widget-level hides remain user choices.
+    /// Scans every provider installation at startup and restores installed or configured providers
+    /// to the dashboard and widget. Explicit disables and widget-level hides remain user choices.
     /// </summary>
     public static void SyncInstalledProviderVisibility()
     {
@@ -50,7 +55,9 @@ public static class ProviderDiscoveryService
                 if (ExplicitlyDisabled.Contains(id))
                     continue;
 
-                if (ProviderInstallDetector.IsInstalled(id))
+                // A configured provider has proven it is set up even when detection misses it, so it
+                // recovers from an earlier automatic hide; otherwise eligibility could never show it.
+                if (ProviderInstallDetector.IsInstalled(id) || Configured.Contains(id))
                 {
                     dashboardChanged |= WidgetSettingsService.SetProviderDashboardVisibleSilent(id, true);
                     if (!ExplicitlyWidgetDisabled.Contains(id))
@@ -58,7 +65,7 @@ public static class ProviderDiscoveryService
                     continue;
                 }
 
-                if (ExplicitlyEnabled.Contains(id) || WidgetSettingsService.IsProviderPinned(id))
+                if (IsEligible(id))
                     continue;
 
                 widgetChanged |= WidgetSettingsService.SetProviderVisibleSilent(id, false);
@@ -75,12 +82,15 @@ public static class ProviderDiscoveryService
 
     public static void RecordFetchResult(UsageResult result)
     {
+        bool stateChanged;
+        bool widgetChanged = false;
+        bool dashboardChanged = false;
         lock (SyncRoot)
         {
-            Probed.Add(result.Id);
+            stateChanged = Probed.Add(result.Id);
 
             if (result.Ok || result.ErrorKind == ProviderErrorKind.AuthRequired)
-                Configured.Add(result.Id);
+                stateChanged |= Configured.Add(result.Id);
 
             // Fetches update discovery state only. Startup sync restores installed
             // dashboard and widget entries; an explicit widget hide is never overridden.
@@ -88,14 +98,29 @@ public static class ProviderDiscoveryService
             if (result.ErrorKind == ProviderErrorKind.NotInstalled
                 && !ProviderInstallDetector.IsInstalled(result.Id)
                 && WidgetSettingsService.AutoHideUnavailable
-                && !ExplicitlyEnabled.Contains(result.Id))
+                && !ExplicitlyEnabled.Contains(result.Id)
+                && !WidgetSettingsService.IsProviderPinned(result.Id))
             {
-                WidgetSettingsService.SetProviderDashboardVisible(result.Id, false);
-                WidgetSettingsService.SetProviderVisible(result.Id, false);
+                dashboardChanged = WidgetSettingsService.SetProviderDashboardVisibleSilent(result.Id, false);
+                widgetChanged = WidgetSettingsService.SetProviderVisibleSilent(result.Id, false);
             }
 
-            Save();
+            if (stateChanged || _savePending)
+                Save();
+            // Keep writes from concurrent fetch completions serialized with their mutations.
+            if (widgetChanged)
+                WidgetSettingsService.SaveProviderVisibility();
+            if (dashboardChanged)
+                WidgetSettingsService.SaveDashboardProviderVisibility();
         }
+
+        // UI subscribers can read discovery state; never notify them while holding its lock.
+        if (widgetChanged)
+            WidgetSettingsService.NotifyProviderVisibilityChanged();
+        if (dashboardChanged)
+            WidgetSettingsService.NotifyDashboardProviderVisibilityChanged();
+        if (stateChanged)
+            Changed?.Invoke(result.Id);
     }
 
     public static bool IsProbed(ProviderId id)
@@ -179,6 +204,8 @@ public static class ProviderDiscoveryService
             return false;
         if (id == active)
             return true;
+        if (!WidgetSettingsService.IsProviderDashboardVisible(id) && !WidgetSettingsService.IsProviderVisible(id))
+            return false;
         return IsEligible(id);
     }
 
@@ -188,13 +215,29 @@ public static class ProviderDiscoveryService
             return false;
         if (result.Id == active)
             return true;
+        if (!WidgetSettingsService.IsProviderDashboardVisible(result.Id))
+            return false;
         return IsEligible(result.Id);
     }
 
     /// <summary>
-    /// Every installed provider can be checked while its app is closed.
+    /// Shared by dashboard fetching and widget availability so changing focus cannot discard
+    /// an explicit provider choice merely because installation detection missed it.
     /// </summary>
-    private static bool IsEligible(ProviderId id) => ProviderInstallDetector.IsInstalled(id);
+    internal static bool IsEligible(ProviderId id)
+    {
+        if (IsExplicitlyDisabled(id))
+            return false;
+        if (IsExplicitlyEnabled(id) || WidgetSettingsService.IsProviderPinned(id)
+            || IsConfigured(id) || ProviderInstallDetector.IsInstalled(id))
+            return true;
+
+        // Default visibility is true for every registered provider. Only a saved visible choice
+        // should bypass availability when automatic hiding is off, not those defaults.
+        return !WidgetSettingsService.AutoHideUnavailable
+            && ((WidgetSettingsService.TryGetDashboardProviderVisibilityOverride(id, out bool dashboard) && dashboard)
+                || (WidgetSettingsService.TryGetProviderVisibilityOverride(id, out bool widget) && widget));
+    }
 
     public static bool ShouldShowInAvailable(UsageResult result, ProviderId? active)
     {
@@ -214,6 +257,7 @@ public static class ProviderDiscoveryService
             ExplicitlyEnabled.Clear();
             ExplicitlyDisabled.Clear();
             ExplicitlyWidgetDisabled.Clear();
+            _savePending = false;
         }
     }
 
@@ -303,6 +347,7 @@ public static class ProviderDiscoveryService
 
     private static void Save()
     {
+        _savePending = true;
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(StatePath)!);
@@ -315,6 +360,7 @@ public static class ProviderDiscoveryService
                 ExplicitlyWidgetDisabled = ExplicitlyWidgetDisabled.Select(id => id.ToString()).OrderBy(s => s).ToArray(),
             };
             File.WriteAllText(StatePath, JsonSerializer.Serialize(state, new JsonSerializerOptions { WriteIndented = true }));
+            _savePending = false;
         }
         catch
         {

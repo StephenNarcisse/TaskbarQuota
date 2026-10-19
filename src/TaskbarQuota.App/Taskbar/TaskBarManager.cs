@@ -249,6 +249,7 @@ namespace TaskbarQuota.Taskbar
                     || TaskBarWidget.IsAnyUserRepositioning
                     || _floatingWindow?.IsDragging == true;
                 WidgetSettingsService.Changed += OnWidgetSettingsChanged;
+                ProviderDisplayOrderService.Changed += OnWidgetSettingsChanged;
                 App.Quitting += OnQuitting;
                 // Installed from the UI thread on purpose: WINEVENT_OUTOFCONTEXT callbacks arrive through
                 // that thread's message pump, which this one has and background threads do not.
@@ -365,9 +366,8 @@ namespace TaskbarQuota.Taskbar
                 return false;
 
             var coordinator = UsageCoordinator.Instance;
-            var providers = coordinator.WidgetDisplayProviders
-                .Take(UsageCoordinator.MaxDisplayedWidgetTiles)
-                .ToArray();
+            var providers = ProviderDisplayOrderService.Sort(coordinator.WidgetDisplayProviders
+                .Take(UsageCoordinator.MaxDisplayedWidgetTiles));
             var activity = AgentActivityService.Instance.Snapshot;
 
             _floatingWindow.SetActivitySnapshot(activity);
@@ -392,9 +392,8 @@ namespace TaskbarQuota.Taskbar
                 return;
 
             var coordinator = UsageCoordinator.Instance;
-            var providers = coordinator.WidgetDisplayProviders
-                .Take(UsageCoordinator.MaxDisplayedWidgetTiles)
-                .ToArray();
+            var providers = ProviderDisplayOrderService.Sort(coordinator.WidgetDisplayProviders
+                .Take(UsageCoordinator.MaxDisplayedWidgetTiles));
 
             bool needsFetch = false;
             foreach (var provider in providers)
@@ -735,7 +734,9 @@ namespace TaskbarQuota.Taskbar
                     WidgetSettingsService.IsProviderPinned);
             }
 
-            return TaskbarContentRouter.ProvidersForDisplay(
+            // Select pins and route/cap first, then arrange the resulting tiles. A preferred position
+            // for an unpinned active provider must not evict a pin when the display is full.
+            return ProviderDisplayOrderService.Sort(TaskbarContentRouter.ProvidersForDisplay(
                 providers,
                 mode,
                 ResolveDisplayKey(WidgetSettingsService.SelectedTaskbarDisplayKey) ?? string.Empty,
@@ -747,7 +748,7 @@ namespace TaskbarQuota.Taskbar
                     : ResolveDisplayKey(WidgetSettingsService.GetAdaptiveProviderDisplay(provider)),
                 WidgetSettingsService.IsProviderPinned,
                 provider => ResolveDisplayKey(WidgetSettingsService.GetPinnedProviderDisplay(provider)),
-                UsageCoordinator.MaxDisplayedWidgetTiles);
+                UsageCoordinator.MaxDisplayedWidgetTiles));
         }
 
         private static ProviderId? ActiveProviderForWidget(
@@ -1327,6 +1328,7 @@ namespace TaskbarQuota.Taskbar
             UsageCoordinator.Instance.ProviderForegroundChanged -= OnProviderForegroundChanged;
             UsageCoordinator.Instance.IsOwnUiEngaged = null;
             WidgetSettingsService.Changed -= OnWidgetSettingsChanged;
+            ProviderDisplayOrderService.Changed -= OnWidgetSettingsChanged;
             _initialized = false;
             Interlocked.Exchange(ref _uiWatchdogStopping, 1);
             _uiWatchdogTimer?.Dispose();

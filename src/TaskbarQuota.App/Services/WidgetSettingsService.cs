@@ -90,16 +90,16 @@ public static class WidgetSettingsService
     private static readonly string WidgetRowsPath =
         Path.Combine(AppStorage.AppDataDirectory, "widget-rows.json");
 
-    private static readonly string WidgetProvidersPath =
+    private static string WidgetProvidersPath =>
         Path.Combine(AppStorage.AppDataDirectory, "widget-providers.json");
 
-    private static readonly string WidgetPinsPath =
+    private static string WidgetPinsPath =>
         Path.Combine(AppStorage.AppDataDirectory, "widget-pins.json");
 
-    private static readonly string DashboardProvidersPath =
+    private static string DashboardProvidersPath =>
         Path.Combine(AppStorage.AppDataDirectory, "dashboard-providers.json");
 
-    private static readonly string AutoHideUnavailablePath =
+    private static string AutoHideUnavailablePath =>
         Path.Combine(AppStorage.AppDataDirectory, "auto-hide-unavailable.txt");
 
     private static readonly string HideWhenUnfocusedPath =
@@ -616,12 +616,20 @@ public static class WidgetSettingsService
     internal static void SaveProviderVisibilityAndNotify()
     {
         SaveProviderVisibility();
-        Changed?.Invoke(null, EventArgs.Empty);
+        NotifyProviderVisibilityChanged();
     }
 
     internal static void SaveDashboardProviderVisibilityAndNotify()
     {
         SaveDashboardProviderVisibility();
+        NotifyDashboardProviderVisibilityChanged();
+    }
+
+    internal static void NotifyProviderVisibilityChanged()
+        => Changed?.Invoke(null, EventArgs.Empty);
+
+    internal static void NotifyDashboardProviderVisibilityChanged()
+    {
         DashboardCompositionChanged?.Invoke(null, EventArgs.Empty);
         Changed?.Invoke(null, EventArgs.Empty);
     }
@@ -1160,7 +1168,7 @@ public static class WidgetSettingsService
         }
     }
 
-    private static void SaveProviderVisibility()
+    internal static void SaveProviderVisibility()
     {
         try
         {
@@ -1218,7 +1226,7 @@ public static class WidgetSettingsService
         }
     }
 
-    private static void SaveDashboardProviderVisibility()
+    internal static void SaveDashboardProviderVisibility()
     {
         try
         {

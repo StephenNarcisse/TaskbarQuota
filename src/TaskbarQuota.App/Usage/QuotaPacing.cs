@@ -51,8 +51,10 @@ public static class QuotaPacing
 
     public static string? Tooltip(PaceProjection projection, DateTimeOffset now)
     {
+        if (projection.Severity == PaceSeverity.Spent)
+            return "Limit reached";
         if (!projection.HasForecast)
-            return projection.Severity == PaceSeverity.Spent ? "Limit reached" : null;
+            return null;
         return projection.Severity switch
         {
             PaceSeverity.Healthy when projection.ProjectedUsedPercent is { } p
@@ -60,9 +62,29 @@ public static class QuotaPacing
             PaceSeverity.Close when projection.ProjectedUsedPercent is { } p
                 => $"~{Math.Round(p):0}% used at reset ({Math.Max(1, Math.Round(100 - p)):0}% spare)",
             PaceSeverity.RunningOut when projection.RunOutAt is { } at
-                => $"Runs out {FormatAbsolute(at, now)}; ~{Math.Round(projection.ProjectedUsedPercent ?? 100):0}% used at reset",
+                => $"At your current rate, runs out {FormatRelative(at, now)}, {FormatAbsolute(at, now)} (~{Math.Round(projection.ProjectedUsedPercent ?? 100):0}% used by reset). A forecast, not a certainty.",
             PaceSeverity.RunningOut
-                => $"Projected to run out before reset (~{Math.Round(projection.ProjectedUsedPercent ?? 100):0}% used at reset)",
+                => $"At your current rate, runs out before reset (~{Math.Round(projection.ProjectedUsedPercent ?? 100):0}% used by reset). A forecast, not a certainty.",
+            _ => null,
+        };
+    }
+
+    /// <summary>Short one-line status for cards, e.g. "On pace", "~3% spare", "Runs out today at 3:23 AM". The
+    /// longer projection lives in <see cref="Tooltip"/>.</summary>
+    public static string? CardText(PaceProjection projection, DateTimeOffset now)
+    {
+        if (projection.Severity == PaceSeverity.Spent)
+            return "Limit reached";
+        if (!projection.HasForecast)
+            return null;
+        return projection.Severity switch
+        {
+            PaceSeverity.Healthy => "On pace",
+            PaceSeverity.Close when projection.ProjectedUsedPercent is { } p
+                => $"~{Math.Max(1, Math.Round(100 - p)):0}% spare",
+            PaceSeverity.RunningOut when projection.RunOutAt is { } at
+                => $"At this rate, runs out {FormatRelative(at, now)}",
+            PaceSeverity.RunningOut => "At this rate, runs out before reset",
             _ => null,
         };
     }
@@ -99,4 +121,17 @@ public static class QuotaPacing
         if (diff.TotalHours >= 1) return $"in {(int)diff.TotalHours}h {diff.Minutes}m";
         return $"in {Math.Max(1, diff.Minutes)}m";
     }
+}
+
+/// <summary>Window lengths providers pass to <see cref="RateWindow"/> so pace can be forecast.</summary>
+public static class QuotaWindowLength
+{
+    public const int FiveHours = 300;
+    public const int Daily = 1440;
+    public const int Weekly = 10080;
+
+    /// <summary>Length of the billing month that ends at <paramref name="resetAt"/> (one calendar month back),
+    /// or null when no reset time is known. Months vary, so this is the real cycle, not a flat 30 days.</summary>
+    public static int? Monthly(DateTimeOffset? resetAt)
+        => resetAt is { } reset ? (int)Math.Round((reset - reset.AddMonths(-1)).TotalMinutes) : null;
 }
