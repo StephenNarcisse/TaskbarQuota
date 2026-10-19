@@ -1031,6 +1031,13 @@ namespace TaskbarQuota.Controls
 
         private void OnWidgetSettingsChanged(object? sender, EventArgs e)
         {
+            // Discovery raises Changed from fetch threads; an exception here would also skip later subscribers.
+            if (!DispatcherQueue.HasThreadAccess)
+            {
+                DispatcherQueue.TryEnqueue(() => OnWidgetSettingsChanged(sender, e));
+                return;
+            }
+
             if (_lastResult is { } result)
                 Apply(result, force: true);
             else
