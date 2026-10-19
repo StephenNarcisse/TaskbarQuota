@@ -139,6 +139,36 @@
                 </StackPanel>
             </tk:SettingsCard>
 
+            <tk:SettingsCard x:Name="FloatingWindowOpacityCard"
+                             Header="Floating window opacity"
+                             Description="Fade the whole floating window, including text, icons and bars, so the app underneath stays visible. Ctrl + scroll over the window also adjusts it.">
+                <tk:SettingsCard.HeaderIcon>
+                    <FontIcon Glyph="&#xE7B3;"/>
+                </tk:SettingsCard.HeaderIcon>
+                <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                    <Grid x:Name="FloatingWindowOpacitySliderHost"
+                          Width="180"
+                          VerticalAlignment="Center"
+                          AutomationProperties.Name="Floating window opacity"/>
+                    <TextBlock x:Name="FloatingWindowOpacityLabel"
+                               VerticalAlignment="Center"
+                               MinWidth="40"
+                               Style="{StaticResource BodyTextBlockStyle}"/>
+                </StackPanel>
+            </tk:SettingsCard>
+
+            <tk:SettingsCard x:Name="FloatingClickThroughCard"
+                             Header="Floating window click-through"
+                             Description="Let clicks pass through the floating window to the app underneath. Hold Ctrl over the window to click, drag or scroll it. Also available from the tray icon menu.">
+                <tk:SettingsCard.HeaderIcon>
+                    <FontIcon Glyph="&#xE8B0;"/>
+                </tk:SettingsCard.HeaderIcon>
+                <ToggleSwitch x:Name="FloatingClickThroughToggle"
+                              AutomationProperties.Name="Floating window click-through"
+                              AutomationProperties.AutomationId="FloatingClickThroughToggle"
+                              Toggled="OnFloatingClickThroughToggled"/>
+            </tk:SettingsCard>
+
             <TextBlock Text="Providers" Style="{StaticResource BodyStrongTextBlockStyle}" Margin="0,16,0,2"/>
             <tk:SettingsCard Header="Hide unavailable providers"
                              Description="Automatically hide providers that are not installed or signed in. You can still add them from the dashboard or below.">

@@ -24,6 +24,7 @@ namespace TaskbarQuota.Views
         private bool _suppressProviderMuteEvents;
         private bool _suppressTaskbarPlacementEvents;
         private Slider? _floatingOpacitySlider;
+        private Slider? _floatingWindowOpacitySlider;
         // Per-provider controls, so changing one updates only its own row instead of rebuilding the list.
         private readonly Dictionary<ProviderId, ProviderToggleRow> _providerRows = new();
         private readonly Dictionary<ProviderId, CheckBox> _providerMuteControls = new();
@@ -53,6 +54,7 @@ namespace TaskbarQuota.Views
             _isInitializing = true;
             InitializeComponent();
             BuildFloatingOpacitySlider();
+            BuildFloatingWindowOpacitySlider();
             ThemeCombo.SelectedIndex = ThemeService.Current switch
             {
                 ElementTheme.Light => 1,
@@ -66,8 +68,13 @@ namespace TaskbarQuota.Views
             if (_floatingOpacitySlider is { } slider)
                 slider.Value = opacityPercent;
             FloatingOpacityLabel.Text = $"{opacityPercent}%";
-            FloatingOpacityCard.IsEnabled = WidgetSettingsService.CurrentSurface == WidgetSurfaceMode.Floating;
+            FloatingWindowOpacityLabel.Text = $"{(int)System.Math.Round(WidgetSettingsService.FloatingWindowOpacity * 100)}%";
+            FloatingClickThroughToggle.IsOn = WidgetSettingsService.FloatingClickThrough;
+            SetFloatingCardsEnabled(WidgetSettingsService.CurrentSurface == WidgetSurfaceMode.Floating);
             TaskbarPlacementCard.IsEnabled = WidgetSettingsService.CurrentSurface == WidgetSurfaceMode.Taskbar;
+            // The tray menu can toggle click-through while this page is open.
+            Loaded += (_, _) => WidgetSettingsService.Changed += OnWidgetSettingsChanged;
+            Unloaded += (_, _) => WidgetSettingsService.Changed -= OnWidgetSettingsChanged;
             WidgetModeCombo.SelectedIndex = WidgetSettingsService.Current switch
             {
                 WidgetDisplayMode.PercentagesOnly => 1,
@@ -477,7 +484,7 @@ namespace TaskbarQuota.Views
                     ? WidgetSurfaceMode.Floating
                     : WidgetSurfaceMode.Taskbar;
                 WidgetSettingsService.ApplySurface(mode);
-                FloatingOpacityCard.IsEnabled = mode == WidgetSurfaceMode.Floating;
+                SetFloatingCardsEnabled(mode == WidgetSurfaceMode.Floating);
                 TaskbarPlacementCard.IsEnabled = mode == WidgetSurfaceMode.Taskbar;
             }
         }
@@ -706,6 +713,79 @@ namespace TaskbarQuota.Views
             int percent = (int)System.Math.Round(e.NewValue);
             FloatingOpacityLabel.Text = $"{percent}%";
             WidgetSettingsService.ApplyFloatingOpacity(percent / 100d);
+        }
+
+        private void SetFloatingCardsEnabled(bool floating)
+        {
+            FloatingOpacityCard.IsEnabled = floating;
+            FloatingWindowOpacityCard.IsEnabled = floating;
+            FloatingClickThroughCard.IsEnabled = floating;
+        }
+
+        private void BuildFloatingWindowOpacitySlider()
+        {
+            if (_floatingWindowOpacitySlider is not null)
+                return;
+
+            int min = (int)System.Math.Round(WidgetSettingsService.FloatingWindowOpacityMin * 100);
+            var slider = new Slider
+            {
+                HorizontalAlignment = HorizontalAlignment.Stretch,
+                VerticalAlignment = VerticalAlignment.Center,
+                StepFrequency = 5,
+            };
+            slider.Maximum = 100;
+            slider.Minimum = min;
+            slider.Value = System.Math.Clamp(
+                System.Math.Round(WidgetSettingsService.FloatingWindowOpacity * 100),
+                min,
+                100);
+            AutomationProperties.SetName(slider, "Floating window opacity");
+            AutomationProperties.SetAutomationId(slider, "SettingsFloatingWindowOpacitySlider");
+            slider.ValueChanged += OnFloatingWindowOpacityChanged;
+
+            FloatingWindowOpacitySliderHost.Children.Clear();
+            FloatingWindowOpacitySliderHost.Children.Add(slider);
+            _floatingWindowOpacitySlider = slider;
+        }
+
+        private void OnFloatingWindowOpacityChanged(object sender, Microsoft.UI.Xaml.Controls.Primitives.RangeBaseValueChangedEventArgs e)
+        {
+            if (_isInitializing)
+                return;
+
+            int percent = (int)System.Math.Round(e.NewValue);
+            FloatingWindowOpacityLabel.Text = $"{percent}%";
+            WidgetSettingsService.ApplyFloatingWindowOpacity(percent / 100d);
+        }
+
+        private void OnFloatingClickThroughToggled(object sender, RoutedEventArgs e)
+        {
+            if (_isInitializing)
+                return;
+
+            WidgetSettingsService.ApplyFloatingClickThrough(FloatingClickThroughToggle.IsOn);
+        }
+
+        private void OnWidgetSettingsChanged(object? sender, System.EventArgs e)
+            => DispatcherQueue.TryEnqueue(() =>
+            {
+                // Writing back the current value re-applies the same setting, which the Apply* methods
+                // ignore — no feedback loop with the slider/toggle change handlers.
+                if (FloatingClickThroughToggle.IsOn != WidgetSettingsService.FloatingClickThrough)
+                    FloatingClickThroughToggle.IsOn = WidgetSettingsService.FloatingClickThrough;
+
+                // The floating HUD's wheel gestures change these while the page may be open.
+                SyncSlider(_floatingOpacitySlider, FloatingOpacityLabel, WidgetSettingsService.FloatingOpacity);
+                SyncSlider(_floatingWindowOpacitySlider, FloatingWindowOpacityLabel, WidgetSettingsService.FloatingWindowOpacity);
+            });
+
+        private static void SyncSlider(Slider? slider, TextBlock label, double value)
+        {
+            int percent = (int)System.Math.Round(value * 100);
+            if (slider is not null && (int)System.Math.Round(slider.Value) != percent)
+                slider.Value = percent;
+            label.Text = $"{percent}%";
         }
 
         private void OnWidgetModeChanged(object sender, SelectionChangedEventArgs e)
