@@ -3415,7 +3415,7 @@ internal sealed class AgentActivityScanner
         var exe = executable.ToLowerInvariant();
         if (TryGetDirectTerminalProvider(exe, out provider))
         {
-            recencyGated = provider == ProviderId.Codex && IsCodexAppServer(commandLine);
+            recencyGated = provider == ProviderId.Codex && IsRecencyGatedCodex(commandLine);
             return true;
         }
 
@@ -3430,7 +3430,7 @@ internal sealed class AgentActivityScanner
         if (ContainsPackage(text, "@openai\\codex", "\\codex\\bin\\codex", "\\codex-cli"))
         {
             provider = ProviderId.Codex;
-            recencyGated = IsCodexAppServer(commandLine);
+            recencyGated = IsRecencyGatedCodex(commandLine);
             return true;
         }
         if (ContainsPackage(text, "cursor-agent", "@cursor\\agent")) { provider = ProviderId.Cursor; return true; }
@@ -3468,22 +3468,29 @@ internal sealed class AgentActivityScanner
         => markers.Any(marker => commandLine.Contains(marker, StringComparison.Ordinal));
 
     /// <summary>
+    /// WMI returns no command line for processes it cannot inspect (elevated or another user's), so
+    /// an unreadable Codex process could be the app-server and must stay recency-gated.
+    /// </summary>
+    private static bool IsRecencyGatedCodex(string? commandLine)
+        => string.IsNullOrWhiteSpace(commandLine) || IsCodexAppServer(commandLine);
+
+    /// <summary>
     /// True when `app-server` is the Codex subcommand (the first positional argument after the codex
     /// entry point), so a prompt that merely mentions it does not count.
     /// </summary>
     private static bool IsCodexAppServer(string commandLine)
     {
-        var tokens = commandLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        int start = Array.FindIndex(tokens, token =>
+        var tokens = TokenizeCommandLine(commandLine);
+        int start = tokens.FindIndex(token =>
         {
-            var name = token.Trim('"').ToLowerInvariant();
+            var name = token.ToLowerInvariant();
             return name.EndsWith("codex") || name.EndsWith("codex.exe") || name.EndsWith("codex.js")
                 || name.EndsWith("codex.cmd") || name.EndsWith("codex.mjs");
         });
         if (start < 0)
             return false;
 
-        for (int i = start + 1; i < tokens.Length; i++)
+        for (int i = start + 1; i < tokens.Count; i++)
         {
             var token = tokens[i];
             if (token.StartsWith('-'))
@@ -3496,6 +3503,40 @@ internal sealed class AgentActivityScanner
             return token.Equals("app-server", StringComparison.OrdinalIgnoreCase);
         }
         return false;
+    }
+
+    /// <summary>
+    /// Splits on whitespace outside double quotes and drops the quotes, so a quoted path with spaces
+    /// (`-C "C:\My Dir"`) stays one token.
+    /// </summary>
+    private static List<string> TokenizeCommandLine(string commandLine)
+    {
+        var tokens = new List<string>();
+        var current = new StringBuilder();
+        bool inQuotes = false, hasToken = false;
+        foreach (var ch in commandLine)
+        {
+            if (ch == '"')
+            {
+                inQuotes = !inQuotes;
+                hasToken = true;
+            }
+            else if (char.IsWhiteSpace(ch) && !inQuotes)
+            {
+                if (hasToken)
+                    tokens.Add(current.ToString());
+                current.Clear();
+                hasToken = false;
+            }
+            else
+            {
+                current.Append(ch);
+                hasToken = true;
+            }
+        }
+        if (hasToken)
+            tokens.Add(current.ToString());
+        return tokens;
     }
 
     internal static ProviderId? DetectTerminalProviderForTesting(string executable, string commandLine)

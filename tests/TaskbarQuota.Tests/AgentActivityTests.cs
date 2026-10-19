@@ -125,6 +125,24 @@ public sealed class AgentActivityTests
         Assert.False(AgentActivityScanner.IsRecencyGatedTerminalCommandForTesting("codex", @"codex ""fix the app-server tests"""));
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void CodexWithUnreadableCommandLine_StaysRecencyGated(string commandLine)
+    {
+        Assert.Equal(ProviderId.Codex, AgentActivityScanner.DetectTerminalProviderForTesting("codex", commandLine));
+        Assert.True(AgentActivityScanner.IsRecencyGatedTerminalCommandForTesting("codex", commandLine));
+    }
+
+    [Fact]
+    public void CodexAppServer_QuotedOptionValueWithSpacesIsOneToken()
+    {
+        Assert.True(AgentActivityScanner.IsRecencyGatedTerminalCommandForTesting(
+            "codex", @"""C:\Program Files\Codex\codex.exe"" -C ""C:\My Projects\repo"" app-server"));
+        Assert.False(AgentActivityScanner.IsRecencyGatedTerminalCommandForTesting(
+            "codex", @"codex -C ""C:\My Projects\repo"" ""explain app-server"""));
+    }
+
     [Fact]
     public void RecencyGatedHost_DoesNotClaimStaleSession()
     {
