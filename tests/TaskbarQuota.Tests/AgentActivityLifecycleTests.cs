@@ -135,6 +135,23 @@ public sealed class AgentActivityLifecycleTests
         Assert.Equal(0, raised);
     }
 
+    [Theory]
+    [InlineData(AgentActivityStatus.Working)]
+    [InlineData(AgentActivityStatus.Waiting)]
+    public void DismissActiveSession_IsIgnored(AgentActivityStatus status)
+    {
+        var service = new AgentActivityService();
+        service.ApplyScan([Item("live", status)]);
+        var raised = 0;
+        service.Changed += _ => raised++;
+
+        service.Dismiss("live");
+
+        Assert.Equal(0, raised);
+        Assert.Equal("live", Assert.Single(service.Snapshot.Items).Id);
+        Assert.Contains(service.Snapshot.TrackedItems, tracked => tracked.Id == "live");
+    }
+
     [Fact]
     public void IdleSession_DisappearsAfterIdleRetention()
     {

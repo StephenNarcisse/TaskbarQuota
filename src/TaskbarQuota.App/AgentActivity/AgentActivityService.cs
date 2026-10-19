@@ -239,7 +239,9 @@ public sealed class AgentActivityService
         Action<AgentActivitySnapshot>? handlers;
         lock (_gate)
         {
-            if (!_items.TryGetValue(id, out var item))
+            // A stale card can still expose dismiss after its session resumed; never hide active work.
+            if (!_items.TryGetValue(id, out var item)
+                || item.Status is AgentActivityStatus.Working or AgentActivityStatus.Waiting)
                 return;
             _dismissed[id] = item.UpdatedAt;
             _acknowledged.Add(id);
